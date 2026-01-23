@@ -1,0 +1,12 @@
+# Core document and data tools
+python-docx>=0.8.11
+pandas>=1.5.3
+openpyxl
+PyMuPDF>=1.22.0
+tk
+fuzzywuzzy[speedup]
+reportlab
+pdf2image==1.16.3
+opencv-python
+Pillow
+numpy
