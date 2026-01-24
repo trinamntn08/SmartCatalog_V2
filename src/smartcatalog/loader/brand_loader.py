@@ -1,5 +1,5 @@
 import pandas as pd
-from fuzzywuzzy import process
+from rapidfuzz import process
 import re
 
 

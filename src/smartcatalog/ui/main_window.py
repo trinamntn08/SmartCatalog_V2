@@ -1,131 +1,542 @@
 # smartcatalog/ui/main_window.py
+from __future__ import annotations
 
+import threading
+import traceback
 import tkinter as tk
-from tkinter import ttk, scrolledtext
-from functools import partial
+from tkinter import ttk, scrolledtext, messagebox, filedialog
 from pathlib import Path
+from typing import Callable, Optional
+from PIL import Image, ImageTk
 
-from smartcatalog.state import AppState
-from smartcatalog.loader.word_loader import load_and_extract_word
-from smartcatalog.loader.excel_loader import build_or_update_db_from_excel
+from smartcatalog.state import AppState, CatalogItem
 from smartcatalog.loader.pdf_loader import build_or_update_db_from_pdf
-from smartcatalog.matcher.matchers import (
-    run_match_word_to_pdf_and_show_result,
-    run_match_word_to_excel_and_show_result,
-)
-from smartcatalog.ui.dictionary_panel import (
-    on_double_click,
-    load_dictionary_file,
-    save_dictionary_file,
-    add_empty_row,
-)
 
-DEFAULT_DICT_PATH = Path(__file__).resolve().parents[2] / "config" / "dictionary" / "vi_en_dictionary.csv"
+
+def _safe_ui(root: tk.Misc, fn: Callable[[], None]) -> None:
+    root.after(0, fn)
 
 
 class MainWindow(ttk.Frame):
-    def __init__(self, root: tk.Tk, state: AppState | None = None):
-        super().__init__(root)
+    def __init__(self, root: tk.Tk, state: Optional[AppState] = None):
+        super().__init__(root, padding=10)
         self.root = root
         self.state = state or AppState()
+        self.state.ensure_dirs()
+
+        self._sort_col: str = "id"
+        self._sort_desc: bool = False
 
         self.status_message = tk.StringVar(value="Chưa tải dữ liệu")
+        self._busy = tk.BooleanVar(value=False)
+
+        # form vars
+        self.var_code = tk.StringVar()
+        self.var_page = tk.StringVar()
+        self._thumb_refs: list[ImageTk.PhotoImage] = []
+        self._full_img_ref: Optional[ImageTk.PhotoImage] = None
+
+        self._selected: Optional[CatalogItem] = None
 
         self._build_layout()
-        self._build_workspace()
-        self._build_dictionary()
-        self._wire_startup()
+        self._build_left_panel()
+        self._build_right_panel()
+        self._build_status_bar()
 
-    def _build_layout(self):
-        self.pack(fill="both", expand=True, padx=10, pady=10)
+        self.refresh_items()
 
-        self.panes = ttk.Panedwindow(self, orient="horizontal")
+    # -----------------
+    # Layout
+    # -----------------
+
+    def _build_layout(self) -> None:
+        self.pack(fill="both", expand=True)
+        self.root.title("SmartCatalog — Catalog DB Builder (v1)")
+
+        self.toolbar = ttk.Frame(self)
+        self.toolbar.pack(fill="x", pady=(0, 8))
+
+        self.btn_choose_pdf = ttk.Button(self.toolbar, text="📂 Chọn PDF...", command=self.on_choose_pdf)
+        self.btn_choose_pdf.pack(side="left", padx=(0, 6))
+
+        self.btn_build_pdf = ttk.Button(self.toolbar, text="📕 Tạo/Cập nhật CSDL (PDF)", command=self.on_build_pdf_db)
+        self.btn_build_pdf.pack(side="left", padx=(0, 6))
+
+        self.btn_refresh = ttk.Button(self.toolbar, text="🔄 Refresh", command=self.refresh_items)
+        self.btn_refresh.pack(side="left", padx=(0, 6))
+
+        ttk.Separator(self.toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
+
+        self.btn_match_excel = ttk.Button(self.toolbar, text="🔍 Tải Excel (match)", command=self.on_match_excel)
+        self.btn_match_excel.pack(side="left")
+
+        self.panes = ttk.PanedWindow(self, orient="horizontal")
         self.panes.pack(fill="both", expand=True)
 
-        self.workspace_pane = ttk.Frame(self.panes)
-        self.dictionary_pane = ttk.Frame(self.panes)
+        self.left_pane = ttk.Frame(self.panes)
+        self.right_pane = ttk.Frame(self.panes)
 
-        self.panes.add(self.workspace_pane, weight=3)
-        self.panes.add(self.dictionary_pane, weight=1)
+        self.panes.add(self.left_pane, weight=1)
+        self.panes.add(self.right_pane, weight=3)
 
-        self.status_bar = ttk.Label(self.root, textvariable=self.status_message)
-        self.status_bar.pack(side="bottom", fill="x", pady=5)
+    def _build_left_panel(self) -> None:
+        search_frame = ttk.Frame(self.left_pane)
+        search_frame.pack(fill="x", pady=(0, 6))
 
-    def _build_workspace(self):
-        self.workspace_toolbar = ttk.Frame(self.workspace_pane)
-        self.workspace_toolbar.pack(fill="x", pady=(0, 5))
+        ttk.Label(search_frame, text="Search:").pack(side="left")
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
+        self.search_entry.pack(side="left", fill="x", expand=True, padx=6)
+        self.search_entry.bind("<KeyRelease>", lambda _e: self._filter_items())
 
-        self.source_preview = scrolledtext.ScrolledText(self.workspace_pane, wrap="word", width=60)
+        list_frame = ttk.LabelFrame(self.left_pane, text="📦 Items", padding=6)
+        list_frame.pack(fill="both", expand=True)
+
+        columns = ("id", "code", "page")
+        self.items_tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=18)
+        self.items_tree.heading("id", command=lambda: self._sort_by("id"))
+        self.items_tree.heading("code",command=lambda: self._sort_by("code"))
+        self.items_tree.heading("page", command=lambda: self._sort_by("page"))
+        self.items_tree.column("id", width=55, anchor="center")
+        self.items_tree.column("code", width=220, anchor="w")
+        self.items_tree.column("page", width=60, anchor="center")
+
+        yscroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.items_tree.yview)
+        self.items_tree.configure(yscrollcommand=yscroll.set)
+
+        self.items_tree.pack(side="left", fill="both", expand=True)
+        yscroll.pack(side="right", fill="y")
+
+        self.items_tree.bind("<<TreeviewSelect>>", self._on_select_item)
+        self._update_sort_headers()
+
+    def _build_right_panel(self) -> None:
+        preview_frame = ttk.LabelFrame(self.right_pane, text="📄 Source preview", padding=6)
+        preview_frame.pack(fill="both", expand=True)
+
+        self.source_preview = scrolledtext.ScrolledText(preview_frame, wrap="word", height=12)
         self.source_preview.pack(fill="both", expand=True)
+        self.source_preview.configure(state="disabled")
 
-        self.analysis_results_frame = ttk.LabelFrame(self.workspace_pane, text="📋 Kết quả phân tích", padding=5)
-        self.analysis_results_frame.pack(fill="both", expand=True, pady=(10, 0))
+        editor = ttk.LabelFrame(self.right_pane, text="🧾 Item fields", padding=8)
+        editor.pack(fill="x", pady=(8, 0))
+        editor.columnconfigure(1, weight=1)
 
-        self.analysis_results_text = scrolledtext.ScrolledText(self.analysis_results_frame, wrap="word", height=15)
-        self.analysis_results_text.pack(fill="both", expand=True)
+        ttk.Label(editor, text="Code").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(editor, textvariable=self.var_code).grid(row=0, column=1, sticky="ew", pady=3)
 
-        self._add_toolbar_button("📄 Tải & trích xuất Word", self.on_load_word)
-        self._add_toolbar_button("🗄️ Tạo/Cập nhật CSDL (Excel)", self.on_build_excel_db)
-        self._add_toolbar_button("📕 Tạo/Cập nhật CSDL (PDF)", self.on_build_pdf_db)
-        self._add_toolbar_button("🔍 Đối chiếu với Excel", self.on_match_excel)
-        self._add_toolbar_button("🔍 Đối chiếu với PDF", self.on_match_pdf)
+        ttk.Label(editor, text="Page").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(editor, textvariable=self.var_page).grid(row=1, column=1, sticky="ew", pady=3)
 
-    def _build_dictionary(self):
-        self.dictionary_toolbar = ttk.Frame(self.dictionary_pane)
-        self.dictionary_toolbar.pack(side="top", pady=5, fill="x")
+        ttk.Label(editor, text="Description").grid(row=2, column=0, sticky="nw", padx=(0, 8), pady=3)
+        self.description_text = scrolledtext.ScrolledText(editor, wrap="word", height=7)
+        self.description_text.grid(row=2, column=1, sticky="ew", pady=3)
 
-        self.dictionary_tree = ttk.Treeview(
-            self.dictionary_pane,
-            columns=("Vietnamese", "English"),
-            show="headings",
-            height=30,
-        )
-        self.dictionary_tree.heading("Vietnamese", text="Vietnamese")
-        self.dictionary_tree.heading("English", text="English")
-        self.dictionary_tree.column("Vietnamese", width=150)
-        self.dictionary_tree.column("English", width=150)
-        self.dictionary_tree.pack(fill="both", expand=True)
+        # Images panel (thumbnails)
+        images_frame = ttk.LabelFrame(self.right_pane, text="🖼 Images", padding=8)
+        images_frame.pack(fill="both", expand=False, pady=(8, 0))
 
-        self.dictionary_tree.bind("<Double-1>", lambda e: on_double_click(e, self.dictionary_tree))
+        # left: thumbnails (scrollable)
+        thumb_container = ttk.Frame(images_frame)
+        thumb_container.pack(side="left", fill="both", expand=True)
 
-        ttk.Button(self.dictionary_toolbar, text="📘 Tải từ điển (.csv)", command=self.on_load_dictionary).pack(side="left", padx=5)
-        ttk.Button(self.dictionary_toolbar, text="💾 Lưu từ điển", command=self.on_save_dictionary).pack(side="left", padx=5)
-        ttk.Button(self.dictionary_toolbar, text="➕ Add row", command=lambda: add_empty_row(self.dictionary_tree)).pack(side="left", padx=5)
+        self.thumb_canvas = tk.Canvas(thumb_container, height=180)
+        self.thumb_canvas.pack(side="left", fill="both", expand=True)
 
-    def _add_toolbar_button(self, label: str, handler):
-        ttk.Button(self.workspace_toolbar, text=label, command=handler).pack(side="left", padx=5)
+        thumb_scroll = ttk.Scrollbar(thumb_container, orient="vertical", command=self.thumb_canvas.yview)
+        thumb_scroll.pack(side="right", fill="y")
+        self.thumb_canvas.configure(yscrollcommand=thumb_scroll.set)
 
-    def _wire_startup(self):
-        if DEFAULT_DICT_PATH.is_file():
-            load_dictionary_file(self.status_message, self.dictionary_tree, self.state, filepath=str(DEFAULT_DICT_PATH), silent=True)
+        self.thumb_inner = ttk.Frame(self.thumb_canvas)
+        self.thumb_canvas.create_window((0, 0), window=self.thumb_inner, anchor="nw")
+
+        def _on_thumb_inner_configure(_e=None):
+            self.thumb_canvas.configure(scrollregion=self.thumb_canvas.bbox("all"))
+
+        self.thumb_inner.bind("<Configure>", _on_thumb_inner_configure)
+
+        # right: preview + buttons
+        right_col = ttk.Frame(images_frame)
+        right_col.pack(side="left", fill="y", padx=(10, 0))
+
+        self.image_preview_label = ttk.Label(right_col, text="(click a thumbnail)")
+        self.image_preview_label.pack(fill="both", expand=False)
+
+        btns = ttk.Frame(right_col)
+        btns.pack(fill="x", pady=(8, 0))
+
+        ttk.Button(btns, text="➕ Add", command=self.on_add_image).pack(fill="x", pady=(0, 6))
+        ttk.Button(btns, text="➖ Remove selected", command=self.on_remove_selected_thumbnail).pack(fill="x")
+
+
+        # Actions
+        actions = ttk.Frame(self.right_pane)
+        actions.pack(fill="x", pady=(8, 0))
+
+        self.btn_save = ttk.Button(actions, text="💾 Save item", command=self.on_save_item)
+        self.btn_save.pack(side="left", padx=(0, 6))
+
+        self.btn_reload = ttk.Button(actions, text="↩ Reload selected", command=self._reload_selected_into_form)
+        self.btn_reload.pack(side="left", padx=(0, 6))
+
+        self.btn_clear = ttk.Button(actions, text="🧹 Clear form", command=self._clear_form)
+        self.btn_clear.pack(side="left", padx=(0, 6))
+
+    def _build_status_bar(self) -> None:
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", pady=(8, 0))
+
+        self.progress = ttk.Progressbar(bar, mode="indeterminate")
+        self.progress.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        self.status_bar = ttk.Label(bar, textvariable=self.status_message, anchor="w")
+        self.status_bar.pack(side="left")
+
+        self._apply_busy(False)
+
+    def _sort_by(self, col: str) -> None:
+        # toggle direction
+        if self._sort_col == col:
+            self._sort_desc = not self._sort_desc
         else:
-            self.status_message.set("⚠️ Không tìm thấy từ điển mặc định.")
+            self._sort_col = col
+            self._sort_desc = False
+
+        def key_fn(it: CatalogItem):
+            if col == "id":
+                return it.id
+            if col == "code":
+                return (it.code or "").lower()
+            if col == "page":
+                return (it.page is None, it.page if it.page is not None else 0)
+            return ""
+
+        self.state.items_cache.sort(key=key_fn, reverse=self._sort_desc)
+
+        self._update_sort_headers()
+        self._filter_items()
+
+
+    def _update_sort_headers(self) -> None:
+        arrows = {
+            True: " ▼",   # descending
+            False: " ▲",  # ascending
+            None: " ⇅",   # inactive
+        }
+
+        for col, label in [("id", "ID"), ("code", "Code"), ("page", "Page")]:
+            if col == self._sort_col:
+                arrow = arrows[self._sort_desc]
+            else:
+                arrow = arrows[None]
+
+            self.items_tree.heading(col, text=f"{label}{arrow}")
+
 
     # -----------------
-    # Handlers (actions)
+    # Busy / status
     # -----------------
 
-    def on_load_word(self):
-        load_and_extract_word(self.state, self.source_preview, self.analysis_results_frame)
+    def _apply_busy(self, busy: bool) -> None:
+        self._busy.set(busy)
+        for w in (self.btn_choose_pdf, self.btn_build_pdf, self.btn_refresh, self.btn_match_excel,
+                  self.btn_save, self.btn_reload, self.btn_clear):
+            w.configure(state=("disabled" if busy else "normal"))
 
-    def on_build_excel_db(self):
-        build_or_update_db_from_excel(self.state, self.status_message)
+        if busy:
+            self.progress.start(10)
+        else:
+            self.progress.stop()
 
-    def on_build_pdf_db(self):
-        build_or_update_db_from_pdf(self.state, self.source_preview, self.status_message)
+    def _set_status(self, msg: str) -> None:
+        self.status_message.set(msg)
 
-    def on_match_excel(self):
-        run_match_word_to_excel_and_show_result(self.state, self.source_preview)
+    def _set_preview_text(self, text: str) -> None:
+        self.source_preview.configure(state="normal")
+        self.source_preview.delete("1.0", "end")
+        self.source_preview.insert("1.0", text)
+        self.source_preview.configure(state="disabled")
 
-    def on_match_pdf(self):
-        run_match_word_to_pdf_and_show_result(self.state)
+    def _run_bg(self, title: str, work: Callable[[], None]) -> None:
+        def runner():
+            try:
+                _safe_ui(self.root, lambda: (self._apply_busy(True), self._set_status(title)))
+                work()
+                _safe_ui(self.root, lambda: self._apply_busy(False))
+            except Exception as exc:
+                tb = traceback.format_exc()
 
-    def on_load_dictionary(self):
-        load_dictionary_file(self.status_message, self.dictionary_tree, self.state)
+                # ✅ capture strings now
+                err_text = f"{exc}\n\n{tb}"
 
-    def on_save_dictionary(self):
-        save_dictionary_file(self.status_message, self.dictionary_tree, self.state)
+                _safe_ui(self.root, lambda: self._apply_busy(False))
+                _safe_ui(self.root, lambda: self._set_status(f"❌ Lỗi: {exc}"))
+                _safe_ui(self.root, lambda msg=err_text: messagebox.showerror("Error", msg))
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    # -----------------
+    # Data <-> UI
+    # -----------------
+
+    def refresh_items(self) -> None:
+        if self.state.db:
+            self.state.items_cache = self.state.db.list_items()
+        self._filter_items()
+        self._set_status(f"Loaded {len(self.state.items_cache)} items")
 
 
-def create_main_window(root):
-    MainWindow(root)
+    def _filter_items(self) -> None:
+        q = (self.search_var.get() or "").strip().lower()
+
+        for row in self.items_tree.get_children():
+            self.items_tree.delete(row)
+
+        for it in self.state.items_cache:
+            text = f"{it.id} {it.code} {it.page or ''} {it.description}".lower()
+            if q and q not in text:
+                continue
+            self.items_tree.insert(
+                "", "end", iid=str(it.id),
+                values=(it.id, it.code, "" if it.page is None else it.page)
+            )
+
+    def _on_select_item(self, _e=None) -> None:
+        sel = self.items_tree.selection()
+        if not sel:
+            return
+
+        item_id = int(sel[0])
+        self.state.selected_item_id = item_id
+        self._selected = next((x for x in self.state.items_cache if x.id == item_id), None)
+        self._reload_selected_into_form()
+
+    def _reload_selected_into_form(self) -> None:
+        it = self._selected
+        if not it:
+            return
+
+        self.var_code.set(it.code)
+        self.var_page.set("" if it.page is None else str(it.page))
+
+        self.description_text.delete("1.0", "end")
+        self.description_text.insert("1.0", it.description or "")
+
+        # thumbnails
+        self._render_thumbnails(it.images or [])
+
+        img_lines = "\n".join([f"- {p}" for p in (it.images or [])[:8]])
+        if it.images and len(it.images) > 8:
+            img_lines += f"\n... ({len(it.images)-8} more)"
+
+        self._set_preview_text(
+            f"ITEM\n"
+            f"ID: {it.id}\n"
+            f"CODE: {it.code}\n"
+            f"PAGE: {it.page}\n\n"
+            f"DESCRIPTION:\n{it.description}\n\n"
+            f"IMAGES ({len(it.images or [])}):\n{img_lines}"
+        )
+
+
+    def _clear_form(self) -> None:
+        self._selected = None
+        self.state.selected_item_id = None
+
+        self.var_code.set("")
+        self.var_page.set("")
+        self.description_text.delete("1.0", "end")
+
+        self._clear_thumbnails()
+        self._set_preview_text("")
+
+        self.items_tree.selection_remove(self.items_tree.selection())
+
+
+    # -----------------
+    # Actions
+    # -----------------
+
+    def on_choose_pdf(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Choose catalog PDF",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
+        )
+        if not path:
+            return
+
+        self.state.set_catalog_pdf(path)
+        self._set_status(f"PDF selected: {path}")
+        self._set_preview_text(f"PDF selected:\n{path}\n\nNow click 'Tạo/Cập nhật CSDL (PDF)'.")
+
+    def on_build_pdf_db(self) -> None:
+        if not self.state.catalog_pdf_path:
+            messagebox.showwarning("Missing PDF", "Please choose a PDF first.")
+            return
+
+        def work():
+            build_or_update_db_from_pdf(self.state, self.source_preview, self.status_message)
+            _safe_ui(self.root, self.refresh_items)
+            _safe_ui(self.root, lambda: self._set_status("✅ Cập nhật DB từ PDF xong"))
+
+        self._run_bg("⏳ Đang tạo/cập nhật DB từ PDF...", work)
+
+    def on_match_excel(self) -> None:
+        messagebox.showinfo("Info", "TODO: Implement Excel matching workflow")
+
+    def _persist_selected(self) -> None:
+        if not self._selected or not self.state.db:
+            return
+        self.state.db.upsert_by_code(
+            code=self._selected.code,
+            description=self._selected.description,
+            page=self._selected.page,
+            image_paths=self._selected.images,
+        )
+    
+
+    def on_add_image(self) -> None:
+        if not self._selected:
+            messagebox.showwarning("No selection", "Please select an item first.")
+            return
+
+        paths = filedialog.askopenfilenames(
+            title="Choose images",
+            filetypes=[
+                ("Image files", "*.png *.jpg *.jpeg *.webp *.bmp"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not paths:
+            return
+
+        for p in paths:
+            sp = str(Path(p))
+            if self._selected.images is None:
+                self._selected.images = []
+
+            if sp not in self._selected.images:
+                self._selected.images.append(sp)
+
+        self._reload_selected_into_form()
+        self._render_thumbnails(self._selected.images)
+        self._persist_selected()
+        self.refresh_items()
+        self._set_status(f"✅ Added {len(paths)} image(s) and saved to DB")
+
+    def on_remove_selected_thumbnail(self) -> None:
+        if not self._selected:
+            return
+
+        path = getattr(self, "_selected_image_path", None)
+        if not path:
+            return
+
+        # images can be None
+        if not self._selected.images:
+            return
+
+        # remove if present (no exception needed)
+        if path in self._selected.images:
+            self._selected.images.remove(path)
+
+        # clear selection (important: path might no longer exist)
+        self._selected_image_path = None
+
+        # re-render safely
+        self._render_thumbnails(self._selected.images or [])
+
+        # persist + refresh
+        self._persist_selected()
+        self.refresh_items()
+        self._set_status("✅ Removed image and saved to DB")
+
+    def on_save_item(self) -> None:
+        if not self._selected:
+            messagebox.showwarning("No selection", "Please select an item on the left first.")
+            return
+
+        code = self.var_code.get().strip()
+        if not code:
+            messagebox.showerror("Invalid", "Code cannot be empty.")
+            return
+
+        page_str = self.var_page.get().strip()
+        page_val: Optional[int] = None
+        if page_str:
+            try:
+                page_val = int(page_str)
+            except ValueError:
+                messagebox.showerror("Invalid", "Page must be an integer.")
+                return
+
+        self._selected.code = code
+        self._selected.page = page_val
+        desc = self.description_text.get("1.0", "end-1c").strip()
+        self._selected.description = desc
+
+        if self.state.db:
+            self.state.db.upsert_by_code(
+                code=self._selected.code,
+                description=self._selected.description,
+                page=self._selected.page,
+                image_paths=self._selected.images,
+            )
+            self.refresh_items()
+
+        self._filter_items()
+        self._set_status(f"✅ Saved item {self._selected.id} ({self._selected.code})")
+
+    def _clear_thumbnails(self) -> None:
+        for w in self.thumb_inner.winfo_children():
+            w.destroy()
+        self._thumb_refs.clear()
+        self._full_img_ref = None
+        self.image_preview_label.configure(image="", text="(click a thumbnail)")
+        self._selected_image_path: Optional[str] = None
+
+    def _load_thumbnail(self, path: str, size=(110, 110)) -> ImageTk.PhotoImage:
+        with Image.open(path) as im:
+            im = im.copy()
+        im.thumbnail(size)
+        return ImageTk.PhotoImage(im)
+
+
+    def _show_full_preview(self, path: str, max_size=(260, 260)) -> None:
+        with Image.open(path) as im:
+            im = im.copy()
+        im.thumbnail(max_size)
+        self._full_img_ref = ImageTk.PhotoImage(im)
+        self.image_preview_label.configure(image=self._full_img_ref, text="")
+        self._selected_image_path = path
+
+    def _render_thumbnails(self, image_paths: list[str]) -> None:
+        self._clear_thumbnails()
+
+        if not image_paths:
+            self.image_preview_label.configure(text="(no images)")
+            return
+
+        # create thumbnails in a grid
+        cols = 4
+        for idx, p in enumerate(image_paths):
+            try:
+                thumb = self._load_thumbnail(p)
+            except Exception:
+                continue
+
+            self._thumb_refs.append(thumb)  # keep reference
+
+            btn = ttk.Label(self.thumb_inner, image=thumb)
+            r, c = divmod(idx, cols)
+            btn.grid(row=r, column=c, padx=4, pady=4)
+
+            # click = show preview + select path for removal
+            btn.bind("<Button-1>", lambda _e, path=p: self._show_full_preview(path))
+
+        # auto-select first image
+        self._show_full_preview(image_paths[0])
+
+
+def create_main_window(root: tk.Tk, state: Optional[AppState] = None) -> MainWindow:
+    return MainWindow(root, state=state)

@@ -1,27 +1,55 @@
 # smartcatalog/state.py
-from dataclasses import dataclass, field
-from typing import List, Dict, Optional
-import pandas as pd
+from __future__ import annotations
 
-@dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional, List
+
+
+@dataclass(slots=True)
+class CatalogItem:
+    """
+    Catalog item stored in DB and edited in UI.
+    """
+    id: int
+    code: str
+    description: str = ""
+    page: Optional[int] = None
+    images: List[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class AppState:
     """
-    Global application state container.
-
-    This class stores all intermediate and shared data used across
-    the SmartCatalog pipeline (Word → Excel → PDF → Dictionary).
+    Global application state.
     """
-    # Word
-    current_word_lines  : List[str]  = field(default_factory=list)
-    extracted_info_item : List[dict] = field(default_factory=list)
+    project_dir: Path = field(default_factory=lambda: Path.cwd())
+    data_dir: Path = field(init=False)
+    db_path: Path = field(init=False)
 
-    # Excel
-    catalog_df: Optional[pd.DataFrame] = None
+    catalog_pdf_path: Optional[Path] = None
 
-    # PDF
-    pdf_pages: List[dict]      = field(default_factory=list)
+    db: Optional[object] = None
+
+    items_cache: List[CatalogItem] = field(default_factory=list)
+    selected_item_id: Optional[int] = None
+
+    pdf_pages: List[dict] = field(default_factory=list)
     product_blocks: List[dict] = field(default_factory=list)
 
-    # Dictionary
-    vi_en_dict: Dict[str, str] = field(default_factory=dict)
-    dict_path: Optional[str]   = None 
+    is_busy: bool = False
+    last_error: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        self.data_dir = self.project_dir / "data"
+        self.db_path = self.data_dir / "catalog.db"
+
+    def ensure_dirs(self) -> None:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+    def set_catalog_pdf(self, pdf_path: str | Path) -> None:
+        self.catalog_pdf_path = Path(pdf_path)
+
+    def clear_runtime_cache(self) -> None:
+        self.pdf_pages.clear()
+        self.product_blocks.clear()
