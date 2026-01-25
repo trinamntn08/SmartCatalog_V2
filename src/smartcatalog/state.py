@@ -6,16 +6,18 @@ from pathlib import Path
 from typing import Optional, List
 
 
-@dataclass(slots=True)
+@dataclass
 class CatalogItem:
-    """
-    Catalog item stored in DB and edited in UI.
-    """
     id: int
     code: str
-    description: str = ""
-    page: Optional[int] = None
-    images: List[str] = field(default_factory=list)
+    description: str
+    page: Optional[int]
+    images: List[str]
+
+    category: str = ""
+    author: str = ""
+    dimension: str = ""
+    small_description: str = ""
 
 
 @dataclass(slots=True)

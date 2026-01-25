@@ -15,7 +15,12 @@ CREATE TABLE IF NOT EXISTS items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   code TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
-  page INTEGER
+  page INTEGER,
+
+  category TEXT NOT NULL DEFAULT '',
+  author TEXT NOT NULL DEFAULT '',
+  dimension TEXT NOT NULL DEFAULT '',
+  small_description TEXT NOT NULL DEFAULT ''
 );
 
 -- Ensure code is unique (safe even if table existed already)
@@ -42,17 +47,14 @@ class CatalogDB:
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
 
-        # Create schema once eagerly (using a short-lived connection)
         conn = self.connect()
         try:
             self._ensure_schema(conn)
+            self._ensure_columns(conn)  # ✅ migration safety for old DBs
         finally:
             conn.close()
 
     def connect(self) -> sqlite3.Connection:
-        """
-        Create a new connection for the current thread.
-        """
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
@@ -62,6 +64,25 @@ class CatalogDB:
         conn.executescript(SCHEMA_SQL)
         conn.commit()
 
+    def _ensure_columns(self, conn: sqlite3.Connection) -> None:
+        """
+        If DB existed before we added new columns, add them safely.
+        """
+        cols = {
+            "category": "TEXT NOT NULL DEFAULT ''",
+            "author": "TEXT NOT NULL DEFAULT ''",
+            "dimension": "TEXT NOT NULL DEFAULT ''",
+            "small_description": "TEXT NOT NULL DEFAULT ''",
+        }
+        cur = conn.cursor()
+        for col, ddl in cols.items():
+            try:
+                cur.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
+            except sqlite3.OperationalError:
+                # column already exists
+                pass
+        conn.commit()
+
     # ---------- Read ----------
 
     def list_items(self, conn: Optional[sqlite3.Connection] = None) -> List[CatalogItem]:
@@ -69,10 +90,16 @@ class CatalogDB:
         if conn is None:
             conn = self.connect()
             self._ensure_schema(conn)
+            self._ensure_columns(conn)
 
         try:
             rows = conn.execute(
-                "SELECT id, code, description, page FROM items ORDER BY id DESC"
+                """
+                SELECT id, code, description, page,
+                       category, author, dimension, small_description
+                FROM items
+                ORDER BY id DESC
+                """
             ).fetchall()
 
             items: List[CatalogItem] = []
@@ -84,6 +111,10 @@ class CatalogDB:
                         code=str(r["code"]),
                         description=str(r["description"] or ""),
                         page=(int(r["page"]) if r["page"] is not None else None),
+                        category=str(r["category"] or ""),
+                        author=str(r["author"] or ""),
+                        dimension=str(r["dimension"] or ""),
+                        small_description=str(r["small_description"] or ""),
                         images=self.list_images(item_id, conn=conn),
                     )
                 )
@@ -97,6 +128,7 @@ class CatalogDB:
         if conn is None:
             conn = self.connect()
             self._ensure_schema(conn)
+            self._ensure_columns(conn)
 
         try:
             rows = conn.execute(
@@ -113,10 +145,16 @@ class CatalogDB:
         if conn is None:
             conn = self.connect()
             self._ensure_schema(conn)
+            self._ensure_columns(conn)
 
         try:
             r = conn.execute(
-                "SELECT id, code, description, page FROM items WHERE code=?",
+                """
+                SELECT id, code, description, page,
+                       category, author, dimension, small_description
+                FROM items
+                WHERE code=?
+                """,
                 (code,),
             ).fetchone()
             if not r:
@@ -128,6 +166,10 @@ class CatalogDB:
                 code=str(r["code"]),
                 description=str(r["description"] or ""),
                 page=(int(r["page"]) if r["page"] is not None else None),
+                category=str(r["category"] or ""),
+                author=str(r["author"] or ""),
+                dimension=str(r["dimension"] or ""),
+                small_description=str(r["small_description"] or ""),
                 images=self.list_images(item_id, conn=conn),
             )
         finally:
@@ -138,23 +180,29 @@ class CatalogDB:
 
     def upsert_by_code(
         self,
+        *,
         code: str,
-        description: str,
         page: Optional[int],
-        image_paths: List[str],
+        category: str = "",
+        author: str = "",
+        dimension: str = "",
+        small_description: str = "",
+        description: str = "",
+        image_paths: List[str] | None = None,
         conn: Optional[sqlite3.Connection] = None,
     ) -> int:
         """
         Insert if code doesn't exist, otherwise update item row and replace images.
-        Safe across threads if each thread uses its own conn.
-
-        If conn is not provided, a connection is created and closed for this call.
         Returns item_id.
         """
+        if image_paths is None:
+            image_paths = []
+
         owns = conn is None
         if conn is None:
             conn = self.connect()
             self._ensure_schema(conn)
+            self._ensure_columns(conn)
 
         try:
             row = conn.execute("SELECT id FROM items WHERE code=?", (code,)).fetchone()
@@ -162,18 +210,29 @@ class CatalogDB:
             if row:
                 item_id = int(row["id"])
                 conn.execute(
-                    "UPDATE items SET description=?, page=? WHERE id=?",
-                    (description, page, item_id),
+                    """
+                    UPDATE items
+                    SET description=?,
+                        page=?,
+                        category=?,
+                        author=?,
+                        dimension=?,
+                        small_description=?
+                    WHERE id=?
+                    """,
+                    (description, page, category, author, dimension, small_description, item_id),
                 )
                 conn.execute("DELETE FROM item_images WHERE item_id=?", (item_id,))
             else:
                 cur = conn.execute(
-                    "INSERT INTO items(code, description, page) VALUES(?,?,?)",
-                    (code, description, page),
+                    """
+                    INSERT INTO items(code, description, page, category, author, dimension, small_description)
+                    VALUES(?,?,?,?,?,?,?)
+                    """,
+                    (code, description, page, category, author, dimension, small_description),
                 )
                 item_id = int(cur.lastrowid)
 
-            # Replace images
             for p in image_paths:
                 conn.execute(
                     "INSERT INTO item_images(item_id, image_path) VALUES(?, ?)",

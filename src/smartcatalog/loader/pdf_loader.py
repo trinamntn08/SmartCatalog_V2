@@ -140,16 +140,21 @@ def build_or_update_db_from_pdf(
             image_paths = _extract_large_images(doc, page, page_img_dir, min_side=20)
 
             for it in items:
-                desc_parts = [p for p in (it.category, it.name, it.variant, it.size) if p]
-                desc = " | ".join(desc_parts)
+                # optional: keep a display string for search/UI (still useful)
+                desc = " | ".join([p for p in (it.category, it.author, it.dimension, it.small_description) if p])
 
                 state.db.upsert_by_code(
                     code=it.code,
-                    description=desc,
                     page=page_no,
-                    image_paths=image_paths,  # still page-level
+                    category=it.category,
+                    author=it.author,
+                    dimension=it.dimension, 
+                    small_description=it.small_description,
+                    description=desc, 
+                    image_paths=image_paths,
                     conn=conn,
                 )
+
                 inserted += 1
 
             if page_no % 10 == 0:
@@ -161,7 +166,7 @@ def build_or_update_db_from_pdf(
                     f"Saved {len(image_paths)} images (filtered)\n\n"
                     f"Examples:\n"
                     + "\n".join([
-                        f"- {it.code}: {it.category} | {it.name} | {it.variant} | {it.size}"
+                        f"- {it.code}: {it.category} | {it.author} | {it.small_description} | {it.dimension}"
                         for it in items[:8]
                     ])
                 )

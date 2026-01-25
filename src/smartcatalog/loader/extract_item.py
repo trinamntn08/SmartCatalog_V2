@@ -25,9 +25,9 @@ _HYPHEN_MAP = {
 class CatalogItem:
     code: str
     category: str
-    name: str
-    variant: str
-    size: str
+    author: str
+    small_description: str
+    dimension: str
     bbox: tuple[float, float, float, float]  # bbox of the code anchor
 
 
@@ -209,25 +209,129 @@ def _extract_item_code_from_page(page: fitz.Page) -> list[dict[str, Any]]:
 # -------------------------
 # Cell field extraction
 # -------------------------
-def _extract_item_name(cell_spans: list[dict[str, Any]], code_bbox: tuple[float, float, float, float]) -> str:
-    cy = _y_center(code_bbox)
-    candidates = []
+def _looks_like_author(txt: str) -> bool:
+    if not txt:
+        return False
+    up = txt.upper()
+
+    if _CODE_INLINE_RE.fullmatch(txt):
+        return False
+    if "WWW." in up or "HTTP" in up:
+        return False
+    if _looks_like_measurement(txt):
+        return False
+
+    # avoid page numbers alone
+    if txt.strip().isdigit() and len(txt.strip()) <= 4:
+        return False
+
+    # many authors are uppercase (BUCK, DEJERINE, CLAR, …)
+    # but still allow mixed case (some sections may vary)
+    return True
+
+def _y_center(b): return (b[1] + b[3]) * 0.5
+
+def _x_overlap(a, b, tol: float = 2.0) -> bool:
+    # overlap in x with small tolerance
+    return not (a[2] < b[0] - tol or b[2] < a[0] - tol)
+
+def _looks_like_measurement(txt: str) -> bool:
+    t = txt.lower()
+    # common catalog “spec” patterns that appear next to the code
+    if any(u in t for u in ["cm", "mm", "ml", "v", "ø", "\"", "inch"]):
+        return True
+    # “18,0 cm, 7”” or “Ø 100 mm” etc.
+    if re.search(r"\d", t) and re.search(r"(cm|mm|ø|\"|inch)\b", t):
+        return True
+    # mostly digits/punct -> not a author
+    letters = sum(ch.isalpha() for ch in txt)
+    digits  = sum(ch.isdigit() for ch in txt)
+    if digits > 0 and letters == 0:
+        return True
+    return False
+
+def _extract_item_author(cell_spans: list[dict[str, Any]],
+                       code_bbox: tuple[float, float, float, float]) -> str:
+    """
+    Improved for AMNOTEC catalog pages:
+    - author is usually immediately ABOVE the code, same column/card
+    - join multi-span authors on the same line
+    """
+    x0, y0, x1, y1 = code_bbox
+
+    # ---- Search window (tune if needed) ----
+    MAX_DY_ABOVE = 55.0   # how far above the code we search for the author line
+    MAX_DY_BELOW = 6.0    # allow tiny overlap below code top (layout quirks)
+
+    # candidates: near-above + x-overlap + author-like
+    near = []
     for s in cell_spans:
-        if s["bbox"][3] <= cy + 2:
-            txt = s["text"]
-            if _CODE_INLINE_RE.fullmatch(txt):
-                continue
-            if any(ch.isdigit() for ch in txt):
-                continue
-            if "WWW." in txt.upper():
-                continue
-            candidates.append(s)
+        txt = (s.get("text") or "").strip()
+        if not _looks_like_author(txt):
+            continue
 
-    if not candidates:
-        return ""
+        bx0, by0, bx1, by1 = s["bbox"]
 
-    candidates.sort(key=lambda s: (-s["size"], -s["bbox"][1]))
-    return candidates[0]["text"]
+        # must be above (or just slightly overlapping) the code
+        if by1 > y0 + MAX_DY_BELOW:
+            continue
+        if by1 < y0 - MAX_DY_ABOVE:
+            continue
+
+        # must align with the same "card/column"
+        if not _x_overlap((bx0, by0, bx1, by1), code_bbox, tol=6.0):
+            continue
+
+        # scoring: closer to code + bigger font + uppercase bonus
+        dy = max(0.0, y0 - by1)
+        size = float(s.get("size") or 0.0)
+
+        up = txt.upper()
+        uppercase_ratio = (sum(c.isupper() for c in txt if c.isalpha()) /
+                           max(1, sum(c.isalpha() for c in txt)))
+        uppercase_bonus = 0.8 if uppercase_ratio > 0.8 else 0.0
+
+        score = (size * 2.0) + uppercase_bonus - (dy * 0.10)
+
+        near.append((score, s))
+
+    if not near:
+        # fallback to your original behavior (but still safer):
+        # pick the best by size among spans that are above and not noisy
+        cy = _y_center(code_bbox)
+        candidates = []
+        for s in cell_spans:
+            if s["bbox"][3] <= cy + 2:
+                txt = (s.get("text") or "").strip()
+                if not _looks_like_author(txt):
+                    continue
+                candidates.append(s)
+
+        if not candidates:
+            return ""
+
+        candidates.sort(key=lambda s: (-float(s.get("size") or 0.0), -s["bbox"][1]))
+        return (candidates[0].get("text") or "").strip()
+
+    # ---- pick a "best line" then join spans on that same line ----
+    near.sort(key=lambda t: t[0], reverse=True)
+    best = near[0][1]
+    best_y0 = best["bbox"][1]
+
+    # all spans that belong to the same visual line as 'best'
+    LINE_TOL = 3.0  # y tolerance to group same line
+    same_line = []
+    for _score, s in near:
+        if abs(s["bbox"][1] - best_y0) <= LINE_TOL:
+            same_line.append(s)
+
+    # join left->right
+    same_line.sort(key=lambda s: s["bbox"][0])
+    author = " ".join((s.get("text") or "").strip() for s in same_line).strip()
+
+    # final cleanup: collapse multiple spaces
+    author = re.sub(r"\s+", " ", author).strip()
+    return author
 
 #It extracts the size/dimensions text that is often displayed on the same horizontal line as the code
 def _extract_item_dimension(cell_spans: list[dict[str, Any]], code_bbox: tuple[float, float, float, float]) -> str:
@@ -295,7 +399,7 @@ def extract_items_from_page(page: fitz.Page) -> list[CatalogItem]:
     - category (English)
     - code
     - infer grid cells from code positions
-    - name / size / variant from spans inside that cell
+    - author / size / variant from spans inside that cell
     """
     page_dict = page.get_text("dict")
     spans = _collect_spans(page_dict)
@@ -345,16 +449,16 @@ def extract_items_from_page(page: fitz.Page) -> list[CatalogItem]:
         rect = (x0 + pad, y0 + pad, x1 - pad, y1 - pad)
         cell_sp = _spans_in_rect(spans, rect)
 
-        item_name = _extract_item_name(cell_sp, cb)
+        item_author = _extract_item_author(cell_sp, cb)
         item_dimension = _extract_item_dimension(cell_sp, cb)
         item_smal_description = _extract_item_description_english(cell_sp)
 
         items.append(CatalogItem(
             code=item["code"],
             category=item_category_en,
-            name=item_name,
-            variant=item_smal_description,
-            size=item_dimension,
+            author=item_author,
+            small_description=item_smal_description,
+            dimension=item_dimension,
             bbox=cb,
         ))
 

@@ -16,6 +16,43 @@ from smartcatalog.loader.pdf_loader import build_or_update_db_from_pdf
 def _safe_ui(root: tk.Misc, fn: Callable[[], None]) -> None:
     root.after(0, fn)
 
+class ScrollableFrame(ttk.Frame):
+    def __init__(self, parent, *args, **kwargs):
+        super().__init__(parent, *args, **kwargs)
+
+        self.canvas = tk.Canvas(self, highlightthickness=0)
+        self.vscroll = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vscroll.set)
+
+        self.inner = ttk.Frame(self.canvas)
+
+        self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.vscroll.pack(side="right", fill="y")
+
+        self.inner.bind("<Configure>", self._on_inner_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+        # mouse wheel support
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)      # Windows
+        self.canvas.bind_all("<Button-4>", self._on_mousewheel_linux)  # Linux up
+        self.canvas.bind_all("<Button-5>", self._on_mousewheel_linux)  # Linux down
+
+    def _on_inner_configure(self, _e=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas_configure(self, _e=None):
+        # make inner frame width follow canvas width
+        self.canvas.itemconfigure(self._win, width=self.canvas.winfo_width())
+
+    def _on_mousewheel(self, e):
+        self.canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+
+    def _on_mousewheel_linux(self, e):
+        self.canvas.yview_scroll(-1 if e.num == 4 else 1, "units")
+
+
 
 class MainWindow(ttk.Frame):
     def __init__(self, root: tk.Tk, state: Optional[AppState] = None):
@@ -33,6 +70,13 @@ class MainWindow(ttk.Frame):
         # form vars
         self.var_code = tk.StringVar()
         self.var_page = tk.StringVar()
+
+        # new structured vars
+        self.var_category = tk.StringVar()
+        self.var_author = tk.StringVar()
+        self.var_dimension = tk.StringVar()
+        self.var_small_description = tk.StringVar()
+
         self._thumb_refs: list[ImageTk.PhotoImage] = []
         self._full_img_ref: Optional[ImageTk.PhotoImage] = None
 
@@ -51,7 +95,7 @@ class MainWindow(ttk.Frame):
 
     def _build_layout(self) -> None:
         self.pack(fill="both", expand=True)
-        self.root.title("SmartCatalog — Catalog DB Builder (v1)")
+        self.root.title("SmartCatalog — Catalog DB Builder")
 
         self.toolbar = ttk.Frame(self)
         self.toolbar.pack(fill="x", pady=(0, 8))
@@ -70,14 +114,20 @@ class MainWindow(ttk.Frame):
         self.btn_match_excel = ttk.Button(self.toolbar, text="🔍 Tải Excel (match)", command=self.on_match_excel)
         self.btn_match_excel.pack(side="left")
 
+        # Panes
         self.panes = ttk.PanedWindow(self, orient="horizontal")
-        self.panes.pack(fill="both", expand=True)
+        self.panes.pack(side="top", fill="both", expand=True)
 
         self.left_pane = ttk.Frame(self.panes)
         self.right_pane = ttk.Frame(self.panes)
 
         self.panes.add(self.left_pane, weight=1)
         self.panes.add(self.right_pane, weight=3)
+
+        # Scrollable container inside right pane
+        self.right_scroll = ScrollableFrame(self.right_pane)
+        self.right_scroll.pack(fill="both", expand=True)
+
 
     def _build_left_panel(self) -> None:
         search_frame = ttk.Frame(self.left_pane)
@@ -92,14 +142,19 @@ class MainWindow(ttk.Frame):
         list_frame = ttk.LabelFrame(self.left_pane, text="📦 Items", padding=6)
         list_frame.pack(fill="both", expand=True)
 
-        columns = ("id", "code", "page")
+        columns = ("id", "code", "page", "author", "dimension")
         self.items_tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=18)
         self.items_tree.heading("id", command=lambda: self._sort_by("id"))
         self.items_tree.heading("code",command=lambda: self._sort_by("code"))
         self.items_tree.heading("page", command=lambda: self._sort_by("page"))
-        self.items_tree.column("id", width=55, anchor="center")
-        self.items_tree.column("code", width=220, anchor="w")
-        self.items_tree.column("page", width=60, anchor="center")
+        self.items_tree.heading("author", command=lambda: self._sort_by("author"))
+        self.items_tree.heading("dimension", command=lambda: self._sort_by("dimension"))
+
+        self.items_tree.column("id", width=40, anchor="center")
+        self.items_tree.column("code", width=150, anchor="w")
+        self.items_tree.column("page", width=40, anchor="center")
+        self.items_tree.column("author", width=150, anchor="w")
+        self.items_tree.column("dimension", width=150, anchor="w")
 
         yscroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.items_tree.yview)
         self.items_tree.configure(yscrollcommand=yscroll.set)
@@ -111,29 +166,51 @@ class MainWindow(ttk.Frame):
         self._update_sort_headers()
 
     def _build_right_panel(self) -> None:
-        preview_frame = ttk.LabelFrame(self.right_pane, text="📄 Source preview", padding=6)
+        parent = self.right_scroll.inner
+        preview_frame = ttk.LabelFrame(parent , text="📄 Source preview", padding=6)
         preview_frame.pack(fill="both", expand=True)
 
         self.source_preview = scrolledtext.ScrolledText(preview_frame, wrap="word", height=12)
         self.source_preview.pack(fill="both", expand=True)
         self.source_preview.configure(state="disabled")
 
-        editor = ttk.LabelFrame(self.right_pane, text="🧾 Item fields", padding=8)
+        editor = ttk.LabelFrame(parent , text="🧾 Item fields", padding=8)
         editor.pack(fill="x", pady=(8, 0))
         editor.columnconfigure(1, weight=1)
 
-        ttk.Label(editor, text="Code").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
-        ttk.Entry(editor, textvariable=self.var_code).grid(row=0, column=1, sticky="ew", pady=3)
+        r = 0
 
-        ttk.Label(editor, text="Page").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
-        ttk.Entry(editor, textvariable=self.var_page).grid(row=1, column=1, sticky="ew", pady=3)
+        ttk.Label(editor, text="Code").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(editor, textvariable=self.var_code).grid(row=r, column=1, sticky="ew", pady=3)
+        r += 1
 
-        ttk.Label(editor, text="Description").grid(row=2, column=0, sticky="nw", padx=(0, 8), pady=3)
-        self.description_text = scrolledtext.ScrolledText(editor, wrap="word", height=7)
-        self.description_text.grid(row=2, column=1, sticky="ew", pady=3)
+        ttk.Label(editor, text="Page").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(editor, textvariable=self.var_page).grid(row=r, column=1, sticky="ew", pady=3)
+        r += 1
+
+        ttk.Label(editor, text="Category").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(editor, textvariable=self.var_category).grid(row=r, column=1, sticky="ew", pady=3)
+        r += 1
+
+        ttk.Label(editor, text="Author").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(editor, textvariable=self.var_author).grid(row=r, column=1, sticky="ew", pady=3)
+        r += 1
+
+        ttk.Label(editor, text="Dimension").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(editor, textvariable=self.var_dimension).grid(row=r, column=1, sticky="ew", pady=3)
+        r += 1
+
+        ttk.Label(editor, text="Small description").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(editor, textvariable=self.var_small_description).grid(row=r, column=1, sticky="ew", pady=3)
+        r += 1
+
+        # Optional: keep a combined Description for display/search
+        ttk.Label(editor, text="Description (auto)").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        self.description_text = scrolledtext.ScrolledText(editor, wrap="word", height=4)
+        self.description_text.grid(row=r, column=1, sticky="ew", pady=3)
 
         # Images panel (thumbnails)
-        images_frame = ttk.LabelFrame(self.right_pane, text="🖼 Images", padding=8)
+        images_frame = ttk.LabelFrame(parent, text="🖼 Images", padding=8)
         images_frame.pack(fill="both", expand=False, pady=(8, 0))
 
         # left: thumbnails (scrollable)
@@ -170,7 +247,7 @@ class MainWindow(ttk.Frame):
 
 
         # Actions
-        actions = ttk.Frame(self.right_pane)
+        actions = ttk.Frame(parent)
         actions.pack(fill="x", pady=(8, 0))
 
         self.btn_save = ttk.Button(actions, text="💾 Save item", command=self.on_save_item)
@@ -184,7 +261,7 @@ class MainWindow(ttk.Frame):
 
     def _build_status_bar(self) -> None:
         bar = ttk.Frame(self)
-        bar.pack(fill="x", pady=(8, 0))
+        bar.pack(side="bottom", fill="x", pady=(8, 0))
 
         self.progress = ttk.Progressbar(bar, mode="indeterminate")
         self.progress.pack(side="left", fill="x", expand=True, padx=(0, 8))
@@ -209,6 +286,11 @@ class MainWindow(ttk.Frame):
                 return (it.code or "").lower()
             if col == "page":
                 return (it.page is None, it.page if it.page is not None else 0)
+            if col == "author":
+                return (getattr(it, "author", "") or "").lower()
+            if col == "dimension":
+                return (getattr(it, "dimension", "") or "").lower()
+
             return ""
 
         self.state.items_cache.sort(key=key_fn, reverse=self._sort_desc)
@@ -219,18 +301,38 @@ class MainWindow(ttk.Frame):
 
     def _update_sort_headers(self) -> None:
         arrows = {
-            True: " ▼",   # descending
-            False: " ▲",  # ascending
-            None: " ⇅",   # inactive
+            True: " ▼",    # descending
+            False: " ▲",   # ascending
+            None: " ⇅",    # inactive
         }
 
-        for col, label in [("id", "ID"), ("code", "Code"), ("page", "Page")]:
-            if col == self._sort_col:
-                arrow = arrows[self._sort_desc]
-            else:
-                arrow = arrows[None]
+        # Base labels for known columns (fallback = uppercase column author)
+        labels = {
+            "id": "ID",
+            "code": "Code",
+            "page": "Page",
+            "category": "Category",
+            "author": "Author",
+            "dimension": "Dimension",
+            "small_description": "Small desc",
+            "description": "Description",
+        }
 
-            self.items_tree.heading(col, text=f"{label}{arrow}")
+        # Use the actual Treeview column list so it stays in sync
+        cols = list(self.items_tree["columns"])
+
+        for col in cols:
+            label = labels.get(col, col.upper())
+
+            arrow = arrows[self._sort_desc] if col == self._sort_col else arrows[None]
+
+            # keep the click-to-sort command (important!)
+            self.items_tree.heading(
+                col,
+                text=f"{label}{arrow}",
+                command=lambda c=col: self._sort_by(c),
+            )
+
 
 
     # -----------------
@@ -293,13 +395,21 @@ class MainWindow(ttk.Frame):
             self.items_tree.delete(row)
 
         for it in self.state.items_cache:
-            text = f"{it.id} {it.code} {it.page or ''} {it.description}".lower()
+            text = (
+                f"{it.id} {it.code} {it.page or ''} "
+                f"{getattr(it,'category','')} {getattr(it,'author','')} "
+                f"{getattr(it,'dimension','')} {getattr(it,'small_description','')} "
+                f"{it.description}"
+            ).lower()
+
             if q and q not in text:
                 continue
             self.items_tree.insert(
                 "", "end", iid=str(it.id),
-                values=(it.id, it.code, "" if it.page is None else it.page)
+                values=(it.id, it.code, "" if it.page is None else it.page,
+                        getattr(it, "author", ""), getattr(it, "dimension", ""))
             )
+
 
     def _on_select_item(self, _e=None) -> None:
         sel = self.items_tree.selection()
@@ -319,6 +429,13 @@ class MainWindow(ttk.Frame):
         self.var_code.set(it.code)
         self.var_page.set("" if it.page is None else str(it.page))
 
+        # new structured fields
+        self.var_category.set(getattr(it, "category", "") or "")
+        self.var_author.set(getattr(it, "author", "") or "")
+        self.var_dimension.set(getattr(it, "dimension", "") or "")
+        self.var_small_description.set(getattr(it, "small_description", "") or "")
+
+        # keep description (optional)
         self.description_text.delete("1.0", "end")
         self.description_text.insert("1.0", it.description or "")
 
@@ -334,7 +451,11 @@ class MainWindow(ttk.Frame):
             f"ID: {it.id}\n"
             f"CODE: {it.code}\n"
             f"PAGE: {it.page}\n\n"
-            f"DESCRIPTION:\n{it.description}\n\n"
+            f"CATEGORY: {getattr(it, 'category', '')}\n"
+            f"AUTHOR: {getattr(it, 'author', '')}\n"
+            f"DIMENSION: {getattr(it, 'dimension', '')}\n"
+            f"SMALL DESCRIPTION: {getattr(it, 'small_description', '')}\n\n"
+            f"DESCRIPTION (combined):\n{it.description}\n\n"
             f"IMAGES ({len(it.images or [])}):\n{img_lines}"
         )
 
@@ -346,6 +467,12 @@ class MainWindow(ttk.Frame):
         self.var_code.set("")
         self.var_page.set("")
         self.description_text.delete("1.0", "end")
+
+        self.var_category.set("")
+        self.var_author.set("")
+        self.var_dimension.set("")
+        self.var_small_description.set("")
+
 
         self._clear_thumbnails()
         self._set_preview_text("")
@@ -387,12 +514,18 @@ class MainWindow(ttk.Frame):
     def _persist_selected(self) -> None:
         if not self._selected or not self.state.db:
             return
+
         self.state.db.upsert_by_code(
             code=self._selected.code,
-            description=self._selected.description,
             page=self._selected.page,
-            image_paths=self._selected.images,
+            category=getattr(self._selected, "category", "") or "",
+            author=getattr(self._selected, "author", "") or "",
+            dimension=getattr(self._selected, "dimension", "") or "",
+            small_description=getattr(self._selected, "small_description", "") or "",
+            description=self._selected.description or "",
+            image_paths=self._selected.images or [],
         )
+
     
 
     def on_add_image(self) -> None:
@@ -472,17 +605,36 @@ class MainWindow(ttk.Frame):
 
         self._selected.code = code
         self._selected.page = page_val
+
+        # structured
+        self._selected.category = self.var_category.get().strip()
+        self._selected.author = self.var_author.get().strip()
+        self._selected.dimension = self.var_dimension.get().strip()
+        self._selected.small_description = self.var_small_description.get().strip()
+
+        # combined description (optional: auto-build if empty)
         desc = self.description_text.get("1.0", "end-1c").strip()
+        if not desc:
+            parts = [self._selected.category, self._selected.author, self._selected.dimension, self._selected.small_description]
+            desc = " | ".join([p for p in parts if p])
+            self.description_text.delete("1.0", "end")
+            self.description_text.insert("1.0", desc)
+
         self._selected.description = desc
 
         if self.state.db:
             self.state.db.upsert_by_code(
                 code=self._selected.code,
-                description=self._selected.description,
                 page=self._selected.page,
-                image_paths=self._selected.images,
+                category=self._selected.category,
+                author=self._selected.author,
+                dimension=self._selected.dimension,
+                small_description=self._selected.small_description,
+                description=self._selected.description,
+                image_paths=self._selected.images or [],
             )
             self.refresh_items()
+
 
         self._filter_items()
         self._set_status(f"✅ Saved item {self._selected.id} ({self._selected.code})")
