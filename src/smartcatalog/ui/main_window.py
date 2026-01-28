@@ -12,12 +12,12 @@ from PIL import Image, ImageTk
 from smartcatalog.state import AppState, CatalogItem
 from smartcatalog.loader.pdf_loader import build_or_update_db_from_pdf
 from smartcatalog.ui.widgets.scrollable_frame import ScrollableFrame
-from smartcatalog.ui.controllers.pdf_viewer_controller import PdfViewerControllerMixin
 from smartcatalog.ui.controllers.candidates_controller import CandidatesControllerMixin
 from smartcatalog.ui.controllers.images_controller import ImagesControllerMixin
 from smartcatalog.ui.controllers.items_controller import ItemsControllerMixin
 from smartcatalog.ui.controllers.item_form_controller import ItemFormControllerMixin
 from smartcatalog.loader.excel_loader import load_code_to_description_from_excel
+from smartcatalog.ui.pdf_crop_window import PdfCropWindow
 
 import re
 
@@ -52,7 +52,6 @@ def _safe_ui(root: tk.Misc, fn: Callable[[], None]) -> None:
 class MainWindow(
                     ttk.Frame,
                     ItemsControllerMixin,
-                    PdfViewerControllerMixin,
                     CandidatesControllerMixin,
                     ImagesControllerMixin,
                     ItemFormControllerMixin,
@@ -64,7 +63,6 @@ class MainWindow(
         self.root = root
         self.state = state or AppState()
         self.state.ensure_dirs()
-        self._pdf_doc_path: Optional[str] = None
 
         self._sort_col: str = "id"
         self._sort_desc: bool = False
@@ -85,28 +83,13 @@ class MainWindow(
         self._full_img_ref: Optional[ImageTk.PhotoImage] = None
         self._selected_image_path: Optional[str] = None
 
-        self._cand_refs: list[ImageTk.PhotoImage] = []
-        self._cand_selected_asset_id: Optional[int] = None
-        self._cand_selected_asset_path: Optional[str] = None
-        self.var_show_unlinked_candidates = tk.BooleanVar(value=False)
-
         self._selected: Optional[CatalogItem] = None
-
-        # --- PDF viewer state ---
-        self._pdf_doc: Optional[fitz.Document] = None
-        self._pdf_page_index: Optional[int] = None  # 0-based
-        self._pdf_zoom: float = 2.0                 # render scale
-        self._pdf_page_img_ref: Optional[ImageTk.PhotoImage] = None
-        self._pdf_page_pil: Optional[Image.Image] = None  # the rendered page as PIL (for cropping)
-
-        # --- selection rectangle state (canvas coords) ---
-        self._sel_start: Optional[tuple[int, int]] = None
-        self._sel_rect_id: Optional[int] = None
-        self._sel_rect_canvas: Optional[tuple[int, int, int, int]] = None  # x0,y0,x1,y1
+        
 
         self._build_layout()
         self._build_left_panel()
         self._build_right_panel()
+        self._update_pdf_tools_label()
         self._build_status_bar()
 
         self.refresh_items()
@@ -145,6 +128,10 @@ class MainWindow(
 
         self.panes.add(self.left_pane, weight=1)
         self.panes.add(self.right_pane, weight=3)
+
+        # Hidden log widget (kept for pdf_loader logging, not displayed in UI)
+        self.source_preview = scrolledtext.ScrolledText(self, wrap="word", height=8)
+        self.source_preview.configure(state="disabled")
 
         # Scrollable container inside right pane
         self.right_scroll = ScrollableFrame(self.right_pane)
@@ -190,60 +177,33 @@ class MainWindow(
     def _build_right_panel(self) -> None:
         parent = self.right_scroll.inner
 
-        self._build_pdf_viewer_section(parent)
-        self._build_source_preview_section(parent)
-        self._build_item_fields_section(parent)
+        self._build_item_editor_section(parent)
         self._build_images_section(parent)
-        self._build_candidates_section(parent)
+        self._build_candidates_section_simple(parent)
         self._build_actions_section(parent)
 
-    # Helpers functions for _build_right_panel
-    def _build_pdf_viewer_section(self, parent) -> None:
-        pdf_frame = ttk.LabelFrame(parent, text="📄 PDF page (drag to select crop)", padding=6)
-        pdf_frame.pack(fill="both", expand=False)
 
-        pdf_container = ttk.Frame(pdf_frame)
-        pdf_container.pack(fill="both", expand=True)
-
-        self.pdf_canvas = tk.Canvas(pdf_container, height=420, highlightthickness=1)
-        self.pdf_canvas.pack(side="left", fill="both", expand=True)
-
-        pdf_scroll = ttk.Scrollbar(pdf_container, orient="vertical", command=self.pdf_canvas.yview)
-        pdf_scroll.pack(side="right", fill="y")
-        self.pdf_canvas.configure(yscrollcommand=pdf_scroll.set)
-
-        pdf_controls = ttk.Frame(pdf_frame)
-        pdf_controls.pack(fill="x", pady=(6, 0))
-
-        ttk.Button(pdf_controls, text="🔍 Zoom +", command=lambda: self._pdf_set_zoom(self._pdf_zoom * 1.25)).pack(side="left")
-        ttk.Button(pdf_controls, text="🔎 Zoom -", command=lambda: self._pdf_set_zoom(max(0.6, self._pdf_zoom / 1.25))).pack(side="left", padx=(6, 0))
-
-        ttk.Separator(pdf_controls, orient="vertical").pack(side="left", fill="y", padx=10)
-
-        ttk.Button(pdf_controls, text="✂ Crop → Create asset + assign", command=self.on_crop_create_asset_assign).pack(side="left")
-        ttk.Button(pdf_controls, text="🧹 Clear selection", command=self._pdf_clear_selection).pack(side="left", padx=(6, 0))
-
-        self.pdf_info_label = ttk.Label(pdf_controls, text="(select an item to load its page)")
-        self.pdf_info_label.pack(side="left", padx=(10, 0))
-
-        self.pdf_canvas.bind("<Button-1>", self._pdf_on_mouse_down)
-        self.pdf_canvas.bind("<B1-Motion>", self._pdf_on_mouse_drag)
-        self.pdf_canvas.bind("<ButtonRelease-1>", self._pdf_on_mouse_up)
-
-    def _build_source_preview_section(self, parent) -> None:
-        preview_frame = ttk.LabelFrame(parent, text="📄 Source preview", padding=6)
-        preview_frame.pack(fill="both", expand=True)
-
-        self.source_preview = scrolledtext.ScrolledText(preview_frame, wrap="word", height=12)
-        self.source_preview.pack(fill="both", expand=True)
-        self.source_preview.configure(state="disabled")
-
-    def _build_item_fields_section(self, parent) -> None:
-        editor = ttk.LabelFrame(parent, text="🧾 Item fields", padding=8)
-        editor.pack(fill="x", pady=(8, 0))
+    def _build_item_editor_section(self, parent) -> None:
+        editor = ttk.LabelFrame(parent, text="🧾 Item", padding=8)
+        editor.pack(fill="x", pady=(0, 0))
         editor.columnconfigure(1, weight=1)
 
-        r = 0
+        # --- Top row: PDF info + crop button (replaces "PDF Tools" box) ---
+        top = ttk.Frame(editor)
+        top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        top.columnconfigure(0, weight=1)
+
+        self.pdf_tools_label = ttk.Label(top, text="No PDF selected")
+        self.pdf_tools_label.grid(row=0, column=0, sticky="w")
+
+        ttk.Button(
+            top,
+            text="Chỉnh sửa trực tiếp từ PDF",
+            command=self.on_open_pdf_cropper,
+        ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+
+        # --- Fields (replaces "Item fields" box) ---
+        r = 1
 
         ttk.Label(editor, text="Code").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Entry(editor, textvariable=self.var_code).grid(row=r, column=1, sticky="ew", pady=3)
@@ -272,6 +232,57 @@ class MainWindow(
         ttk.Label(editor, text="Description (combined)").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         self.description_text = scrolledtext.ScrolledText(editor, wrap="word", height=4)
         self.description_text.grid(row=r, column=1, sticky="ew", pady=3)
+
+    def on_open_pdf_cropper(self) -> None:
+        if not self.state.catalog_pdf_path:
+            messagebox.showwarning("No PDF", "Please build/select a PDF first.")
+            return
+        if not self._selected or not getattr(self._selected, "page", None):
+            messagebox.showwarning("No item page", "Select an item with a valid page first.")
+            return
+
+        def after_save():
+            self.refresh_items()
+            self._selected = next((x for x in self.state.items_cache if x.id == self._selected.id), self._selected)
+            self._reload_selected_into_form()
+
+            # refresh "Page Images" for the selected item's page
+            if self._selected and getattr(self._selected, "page", None):
+                self._render_candidates_for_page(int(self._selected.page) - 1)
+
+            self._set_status("✅ Crop saved + linked to item")
+
+
+        PdfCropWindow(
+            self.root,
+            state=self.state,
+            item_id=int(self._selected.id),
+            page_1based=int(self._selected.page),
+            on_after_save=after_save,
+            title="Crop from PDF",
+        )
+
+
+    def _update_pdf_tools_label(self) -> None:
+        pdf = self.state.catalog_pdf_path
+        it = self._selected
+
+        # If label not created yet (defensive)
+        if not hasattr(self, "pdf_tools_label"):
+            return
+
+        if not pdf:
+            self.pdf_tools_label.configure(text="No PDF selected")
+            return
+
+        pdf_name = Path(pdf).name if not isinstance(pdf, Path) else pdf.name
+        page = getattr(it, "page", None) if it else None
+
+        if page:
+            self.pdf_tools_label.configure(text=f"PDF: {pdf_name} | Item page: {page}")
+        else:
+            self.pdf_tools_label.configure(text=f"PDF: {pdf_name} | (select an item with page)")
+
 
     def _build_images_section(self, parent) -> None:
         images_frame = ttk.LabelFrame(parent, text="🖼 Images", padding=8)
@@ -306,63 +317,6 @@ class MainWindow(
 
         ttk.Button(btns, text="➕ Add", command=self.on_add_image).pack(fill="x", pady=(0, 6))
         ttk.Button(btns, text="➖ Remove selected", command=self.on_remove_selected_thumbnail).pack(fill="x")
-
-
-    def _build_candidates_section(self, parent) -> None:
-        cand_frame = ttk.LabelFrame(parent, text="🧩 Candidates (from page assets)", padding=8)
-        cand_frame.pack(fill="both", expand=False, pady=(8, 0))
-
-        cand_container = ttk.Frame(cand_frame)
-        cand_container.pack(side="left", fill="both", expand=True)
-
-        self.cand_canvas = tk.Canvas(cand_container, height=180)
-        self.cand_canvas.pack(side="left", fill="both", expand=True)
-
-        cand_scroll = ttk.Scrollbar(cand_container, orient="vertical", command=self.cand_canvas.yview)
-        cand_scroll.pack(side="right", fill="y")
-        self.cand_canvas.configure(yscrollcommand=cand_scroll.set)
-
-        self.cand_inner = ttk.Frame(self.cand_canvas)
-        self.cand_canvas.create_window((0, 0), window=self.cand_inner, anchor="nw")
-
-        def _on_cand_inner_configure(_e=None):
-            self.cand_canvas.configure(scrollregion=self.cand_canvas.bbox("all"))
-
-        self.cand_inner.bind("<Configure>", _on_cand_inner_configure)
-
-        cand_right = ttk.Frame(cand_frame)
-        cand_right.pack(side="left", fill="y", padx=(10, 0))
-
-        self.cand_preview_label = ttk.Label(cand_right, text="(click a candidate)")
-        self.cand_preview_label.pack(fill="both", expand=False)
-
-        cand_btns = ttk.Frame(cand_right)
-        cand_btns.pack(fill="x", pady=(8, 0))
-
-        ttk.Button(cand_btns, text="➡ Assign to item (manual)", command=self.on_assign_candidate).pack(fill="x", pady=(0, 6))
-        ttk.Button(cand_btns, text="⬅ Unassign from item", command=self.on_unassign_candidate).pack(fill="x")
-
-        ttk.Checkbutton(
-            cand_right,
-            text="Show only unlinked candidates",
-            variable=self.var_show_unlinked_candidates,
-            command=self._render_candidates_for_selected,
-        ).pack(fill="x", pady=(6, 0))
-
-        ttk.Button(
-            cand_right,
-            text="⭐ Set selected as Primary",
-            command=self.on_set_primary_candidate,
-        ).pack(fill="x", pady=(8, 0))
-
-        ttk.Button(
-            cand_right,
-            text="🧨 Clear ALL links for item",
-            command=self.on_clear_links_for_item,
-        ).pack(fill="x", pady=(6, 0))
-
-        self.cand_hint = ttk.Label(cand_right, text="Tip: Candidates come from Assets table\n(extracted from PDF per page).")
-        self.cand_hint.pack(fill="x", pady=(8, 0))
 
     def _build_actions_section(self, parent) -> None:
         actions = ttk.Frame(parent)
@@ -453,7 +407,7 @@ class MainWindow(
                 return
 
             self.state.set_catalog_pdf(path)
-            self._pdf_close_doc()
+            _safe_ui(self.root, self._update_pdf_tools_label)
             self._set_status(f"PDF selected: {path}")
             self._set_preview_text(
                 f"PDF selected:\n{path}\n\nBuilding / updating DB now..."

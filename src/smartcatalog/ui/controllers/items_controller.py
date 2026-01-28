@@ -18,6 +18,7 @@ class ItemsControllerMixin:
       - self._selected (CatalogItem | None)
       - self._reload_selected_into_form()
       - self._set_status()
+      - self._update_pdf_tools_label()
       - sort state fields: self._sort_col, self._sort_desc
     """
 
@@ -45,7 +46,9 @@ class ItemsControllerMixin:
                 continue
 
             self.items_tree.insert(
-                "", "end", iid=str(it.id),
+                "",
+                "end",
+                iid=str(it.id),
                 values=(
                     it.id,
                     it.code,
@@ -100,24 +103,41 @@ class ItemsControllerMixin:
         }
 
         cols = list(self.items_tree["columns"])
-
         for col in cols:
             label = labels.get(col, col.upper())
             arrow = arrows[self._sort_desc] if col == self._sort_col else arrows[None]
-
-            # keep click-to-sort command
             self.items_tree.heading(
                 col,
                 text=f"{label}{arrow}",
                 command=lambda c=col: self._sort_by(c),
             )
 
-    def _on_select_item(self, _e=None) -> None:
+    def _on_select_item(self, _evt=None) -> None:
         sel = self.items_tree.selection()
         if not sel:
             return
 
-        item_id = int(sel[0])
-        self.state.selected_item_id = item_id
-        self._selected = next((x for x in self.state.items_cache if x.id == item_id), None)
+        iid = sel[0]
+        vals = self.items_tree.item(iid, "values")
+        if not vals:
+            return
+
+        item_id = int(vals[0])
+
+        # Find item object in cache
+        it = next((x for x in self.state.items_cache if int(x.id) == item_id), None)
+        if not it:
+            return
+
+        self._selected = it
+
+        self._update_pdf_tools_label()
         self._reload_selected_into_form()
+
+        try:
+            if getattr(it, "page", None):
+                self._render_candidates_for_page(int(it.page) - 1)
+        except Exception:
+            pass
+
+        

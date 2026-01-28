@@ -34,6 +34,9 @@ class AppState:
     db_path: Path = field(init=False)
     settings_path: Path = field(init=False)
 
+    # ✅ ADD THIS
+    assets_dir: Path = field(init=False)
+
     # persisted selection
     catalog_pdf_path: Optional[Path] = None
 
@@ -55,12 +58,18 @@ class AppState:
         self.db_path = self.data_dir / "sql" / "catalog.db"
         self.settings_path = self.data_dir / "settings.json"
 
+        # ✅ ADD THIS (stable path for controllers)
+        self.assets_dir = self.data_dir / "assets"
+
         self.ensure_dirs()
         self._load_settings()
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "assets").mkdir(parents=True, exist_ok=True)
+
+        # ✅ use the field we defined (keeps everything consistent)
+        self.assets_dir.mkdir(parents=True, exist_ok=True)
+
         (self.data_dir / "catalog_pdfs").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "images").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "sql").mkdir(parents=True, exist_ok=True)

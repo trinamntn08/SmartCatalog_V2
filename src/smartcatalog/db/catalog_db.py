@@ -135,48 +135,136 @@ class CatalogDB:
     # Read
     # ==========================================================================================
 
-    def list_items(self, conn: Optional[sqlite3.Connection] = None) -> List[CatalogItem]:
-        owns = conn is None
-        if conn is None:
-            conn = self.connect()
-            self._ensure_schema(conn)
-            self._ensure_columns(conn)
+    def _table_exists(self, conn, name: str) -> bool:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (name,),
+        ).fetchone()
+        return row is not None
 
+    def _get_item_columns(self, conn) -> set[str]:
+        cols = set()
+        for r in conn.execute("PRAGMA table_info(items)").fetchall():
+            # row: cid, name, type, notnull, dflt_value, pk
+            cols.add(r[1] if not isinstance(r, dict) else r["name"])
+        return cols
+
+    def list_items(self):
+        """
+        Return List[CatalogItem] with ALL fields the UI expects.
+
+        Images priority:
+        1) assets linked to item (item_asset_links JOIN assets)
+        2) legacy item_images
+        3) fallback items.images (json or ';' separated) if that column exists
+        """
+        import json
+
+        conn = self.connect()
         try:
-            rows = conn.execute(
-                """
-                SELECT id, code, description, page,
-                       category, author, dimension, small_description
-                FROM items
-                ORDER BY id DESC
-                """
-            ).fetchall()
+            cols = self._get_item_columns(conn)
 
-            items: List[CatalogItem] = []
+            # select only columns that exist (safe across migrations)
+            select_cols = ["id", "code", "description", "page"]
+            for opt in ["category", "author", "dimension", "small_description", "images"]:
+                if opt in cols:
+                    select_cols.append(opt)
+
+            sql = f"SELECT {', '.join(select_cols)} FROM items ORDER BY id"
+            rows = conn.execute(sql).fetchall()
+
+            has_item_images = self._table_exists(conn, "item_images")
+            has_assets = self._table_exists(conn, "assets")
+            has_links = self._table_exists(conn, "item_asset_links")
+
+            # ------------------------------------------------------------
+            # Build images maps in BULK (avoid N+1 queries)
+            # ------------------------------------------------------------
+            linked_assets_map: dict[int, list[str]] = {}
+            if has_assets and has_links:
+                link_rows = conn.execute(
+                    """
+                    SELECT l.item_id AS item_id, a.asset_path AS asset_path
+                    FROM item_asset_links l
+                    JOIN assets a ON a.id = l.asset_id
+                    ORDER BY l.item_id ASC, l.is_primary DESC, l.id ASC
+                    """
+                ).fetchall()
+
+                for lr in link_rows:
+                    item_id = int(lr["item_id"])
+                    linked_assets_map.setdefault(item_id, []).append(str(lr["asset_path"]))
+
+            legacy_images_map: dict[int, list[str]] = {}
+            if has_item_images:
+                img_rows = conn.execute(
+                    """
+                    SELECT item_id, image_path
+                    FROM item_images
+                    ORDER BY item_id ASC, id ASC
+                    """
+                ).fetchall()
+
+                for ir in img_rows:
+                    item_id = int(ir["item_id"])
+                    legacy_images_map.setdefault(item_id, []).append(str(ir["image_path"]))
+
+            # ------------------------------------------------------------
+            # Build CatalogItem list
+            # ------------------------------------------------------------
+            items: list[CatalogItem] = []
+
             for r in rows:
-                item_id = int(r["id"])
+                # sqlite row can be tuple or Row/dict depending on your connect()
+                def get(k, default=None):
+                    try:
+                        return r[k]
+                    except Exception:
+                        idx = select_cols.index(k)
+                        return r[idx] if idx < len(r) else default
 
-                # Prefer new links if present; fallback to legacy table
-                new_imgs = self.list_asset_paths_for_item(item_id, conn=conn)
-                images = new_imgs if new_imgs else self.list_images(item_id, conn=conn)
+                item_id = int(get("id"))
+
+                # images: links -> legacy -> items.images fallback
+                images: list[str] = []
+                if item_id in linked_assets_map:
+                    images = linked_assets_map[item_id]
+                elif item_id in legacy_images_map:
+                    images = legacy_images_map[item_id]
+                else:
+                    # fallback: items.images (json list or ';' separated)
+                    if "images" in select_cols:
+                        raw = get("images", "") or ""
+                        if isinstance(raw, (list, tuple)):
+                            images = list(raw)
+                        else:
+                            s = str(raw).strip()
+                            if s.startswith("["):
+                                try:
+                                    images = list(json.loads(s))
+                                except Exception:
+                                    images = []
+                            elif s:
+                                images = [p for p in s.split(";") if p.strip()]
 
                 items.append(
                     CatalogItem(
                         id=item_id,
-                        code=str(r["code"]),
-                        description=str(r["description"] or ""),
-                        page=(int(r["page"]) if r["page"] is not None else None),
-                        category=str(r["category"] or ""),
-                        author=str(r["author"] or ""),
-                        dimension=str(r["dimension"] or ""),
-                        small_description=str(r["small_description"] or ""),
+                        code=str(get("code", "") or ""),
+                        description=str(get("description", "") or ""),
+                        page=(int(get("page")) if get("page") not in (None, "") else None),
                         images=images,
+                        category=str(get("category", "") or ""),
+                        author=str(get("author", "") or ""),
+                        dimension=str(get("dimension", "") or ""),
+                        small_description=str(get("small_description", "") or ""),
                     )
                 )
+
             return items
+
         finally:
-            if owns:
-                conn.close()
+            conn.close()
 
     # ----- Legacy images (kept) -----
 
@@ -555,6 +643,49 @@ class CatalogDB:
         finally:
             if owns:
                 conn.close()
+
+    def insert_asset(
+        self,
+        *,
+        file_path: str,
+        page: int,
+        xref: int | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        source: str = "page_extract",
+        pdf_path: str | None = None,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> int:
+        """
+        Compatibility method used by CandidatesControllerMixin.
+
+        assets schema:
+          assets(pdf_path, page, asset_path, x0,y0,x1,y1, source, sha256, created_at)
+
+        We store:
+          - pdf_path: MUST be stable. Caller (UI) should pass state.catalog_pdf_path.
+          - page: 1-based page
+          - asset_path: file_path
+          - source: 'extract' | 'manual_crop' | 'page_extract'
+
+        xref/width/height currently ignored (not in schema). Kept for API compatibility.
+        Returns asset_id.
+        """
+        if not file_path:
+            raise ValueError("insert_asset: file_path is empty")
+
+        # IMPORTANT: DB layer has no AppState; caller should pass pdf_path.
+        pdf_path_str = str(pdf_path or "").strip()
+
+        return self.upsert_asset(
+            pdf_path=pdf_path_str,
+            page=int(page),
+            asset_path=str(file_path),
+            bbox=None,
+            source=str(source or "extract"),
+            sha256="",
+            conn=conn,
+        )
 
 
     # ==========================================================================================
