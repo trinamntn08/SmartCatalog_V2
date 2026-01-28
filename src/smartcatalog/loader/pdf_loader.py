@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional, Callable, Any
+from PIL import Image
+import io
 
 import fitz  # PyMuPDF
 
@@ -51,9 +53,8 @@ def _extract_large_images(
     min_side: int = 20,
 ) -> list[str]:
     """
-    Extract images from page and save to disk.
-    Filters out small icons using min_side threshold.
-    Returns list of saved file paths (as strings).
+    Legacy extractor: returns list of image file paths.
+    (No bbox yet. We'll add bbox later without breaking call sites.)
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -72,15 +73,78 @@ def _extract_large_images(
         if w < min_side or h < min_side:
             continue
 
-        ext = info.get("ext", "bin")
         data = info["image"]
 
-        filename = f"xref{xref}.{ext}"
+        # ---- PIL processing ----
+        im = Image.open(io.BytesIO(data))
+
+        # Convert everything to RGBA first
+        if im.mode != "RGBA":
+            im = im.convert("RGBA")
+
+        # White background
+        white_bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+        im = Image.alpha_composite(white_bg, im)
+
+        # Final image: RGB (no alpha, no black background)
+        im = im.convert("RGB")
+
+        filename = f"xref{xref}.png"
         path = out_dir / filename
-        path.write_bytes(data)
+        im.save(path, format="PNG", quality=95)
+
         paths.append(str(path))
 
     return paths
+
+
+def _register_page_assets_and_link_to_items(
+    *,
+    state: AppState,
+    conn,
+    pdf_path: Path,
+    page_no: int,
+    item_ids: list[int],
+    image_paths: list[str],
+) -> None:
+    """
+    New behavior (additive): store page images as assets and link to each item.
+    This does NOT change the UI yet, but enables future manual correction workflows.
+
+    We keep it tolerant:
+    - If DB doesn't have new methods (older code), it will just no-op.
+    """
+    if not image_paths or not item_ids:
+        return
+
+    # If user hasn't updated CatalogDB yet, don't crash
+    upsert_asset = getattr(state.db, "upsert_asset", None)
+    link_asset_to_item = getattr(state.db, "link_asset_to_item", None)
+    if not callable(upsert_asset) or not callable(link_asset_to_item):
+        return
+
+    # create assets once per page image, then link to all items on page
+    for img_path in image_paths:
+        asset_id = upsert_asset(
+            pdf_path=str(pdf_path),
+            page=page_no,
+            asset_path=str(img_path),
+            bbox=None,              # bbox not available yet in current extractor
+            source="extract",
+            sha256="",
+            conn=conn,
+        )
+
+        for item_id in item_ids:
+            link_asset_to_item(
+                item_id=item_id,
+                asset_id=asset_id,
+                match_method="heuristic",  # currently: page-level heuristic
+                score=None,
+                verified=False,
+                is_primary=False,
+                conn=conn,
+            )
 
 
 def build_or_update_db_from_pdf(
@@ -94,9 +158,14 @@ def build_or_update_db_from_pdf(
     """
     Extract items from catalog PDF and upsert into SQLite.
 
-    IMPORTANT:
-    - This function is typically executed in a background thread.
-    - Therefore, we must create a SQLite connection INSIDE this thread.
+    Current behavior preserved:
+    - Extract items per page
+    - Extract images per page
+    - For each item: upsert_by_code(... image_paths = page images)
+
+    New behavior added (non-breaking):
+    - Save images as 'assets' (per page)
+    - Link assets to items via 'item_asset_links'
     """
     if not state.catalog_pdf_path:
         raise RuntimeError("state.catalog_pdf_path is not set. Choose a PDF first.")
@@ -139,23 +208,36 @@ def build_or_update_db_from_pdf(
             page_img_dir = images_root / f"p{page_no:04d}"
             image_paths = _extract_large_images(doc, page, page_img_dir, min_side=20)
 
+            # upsert items first (legacy behavior), collect their item_ids
+            page_item_ids: list[int] = []
+
             for it in items:
-                # optional: keep a display string for search/UI (still useful)
                 desc = " | ".join([p for p in (it.category, it.author, it.dimension, it.small_description) if p])
 
-                state.db.upsert_by_code(
+                item_id = state.db.upsert_by_code(
                     code=it.code,
                     page=page_no,
                     category=it.category,
                     author=it.author,
-                    dimension=it.dimension, 
+                    dimension=it.dimension,
                     small_description=it.small_description,
-                    description=desc, 
-                    image_paths=image_paths,
+                    description=desc,
+                    image_paths=image_paths,  # legacy table still filled
                     conn=conn,
                 )
 
+                page_item_ids.append(int(item_id))
                 inserted += 1
+
+            # new additive behavior: register page images as assets and link to items
+            _register_page_assets_and_link_to_items(
+                state=state,
+                conn=conn,
+                pdf_path=pdf_path,
+                page_no=page_no,
+                item_ids=page_item_ids,
+                image_paths=image_paths,
+            )
 
             if page_no % 10 == 0:
                 _set_status(status_message, f"Processed page {page_no}/{end_idx+1} | items upserted: {inserted}")

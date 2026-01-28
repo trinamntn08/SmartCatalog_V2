@@ -9,3 +9,4 @@ layoutparser
 numpy
 pdf2image
 reportlab
+openpyxl>=3.1.0

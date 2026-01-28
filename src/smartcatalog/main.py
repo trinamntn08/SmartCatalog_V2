@@ -1,14 +1,18 @@
 # smartcatalog/main.py
+from __future__ import annotations
 
 import tkinter as tk
+from pathlib import Path
+from typing import Optional
 
 from smartcatalog.state import AppState
 from smartcatalog.db.catalog_db import CatalogDB
 from smartcatalog.ui.main_window import create_main_window
 
 
-def start_ui():
+def start_ui(project_dir: Optional[Path] = None) -> None:
     root = tk.Tk()
+
     # Get screen size
     screen_w = root.winfo_screenwidth()
     screen_h = root.winfo_screenheight()
@@ -18,13 +22,13 @@ def start_ui():
     h = int(screen_h * 0.85)
 
     root.geometry(f"{w}x{h}+50+50")
-    root.minsize(1000, 700)  # prevent collapsing too small
+    root.minsize(1000, 700)
 
     root.title("SmartCatalog – Trích xuất & Đối chiếu sản phẩm")
 
-    state = AppState()
-    state.ensure_dirs()
-    state.db = CatalogDB(state.db_path)   # DB + tables created here
+    state = AppState(project_dir=project_dir or Path.cwd())
+
+    state.db = CatalogDB(state.db_path)
 
     create_main_window(root, state)
     root.columnconfigure(0, weight=1)
