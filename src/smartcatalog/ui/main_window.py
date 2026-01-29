@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import io
 import traceback
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
@@ -16,10 +17,15 @@ from smartcatalog.ui.controllers.candidates_controller import CandidatesControll
 from smartcatalog.ui.controllers.images_controller import ImagesControllerMixin
 from smartcatalog.ui.controllers.items_controller import ItemsControllerMixin
 from smartcatalog.ui.controllers.item_form_controller import ItemFormControllerMixin
-from smartcatalog.loader.excel_loader import load_code_to_description_from_excel
+from smartcatalog.loader.excel_loader import load_code_to_description_from_excel, detect_excel_code_column
 from smartcatalog.ui.pdf_crop_window import PdfCropWindow
 
 import re
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.drawing.image import Image as XLImage
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+from openpyxl.drawing.xdr import XDRPositiveSize2D
 
 def _normalize_code_soft(s: str) -> str:
     if s is None:
@@ -27,6 +33,12 @@ def _normalize_code_soft(s: str) -> str:
     s = str(s).strip()
     s = s.replace("–", "-").replace("—", "-")
     s = re.sub(r"\s+", "", s)  # remove all spaces
+    return s
+
+def _normalize_header_text(s: str) -> str:
+    s = str(s or "").strip().lower()
+    s = s.replace("\n", " ")
+    s = re.sub(r"\s+", " ", s).strip()
     return s
 
 def _build_db_code_index(db_codes: list[str]) -> dict[str, str]:
@@ -116,7 +128,7 @@ class MainWindow(
 
         ttk.Separator(self.toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
 
-        self.btn_search_images  = ttk.Button(self.toolbar, text="🔍 Tìm ảnh từ code", command=self.on_build_excel_db)
+        self.btn_search_images  = ttk.Button(self.toolbar, text="🔍 Tìm ảnh từ code", command=self.on_search_images_from_excel)
         self.btn_search_images .pack(side="left")
 
         # Panes
@@ -489,6 +501,189 @@ class MainWindow(
             )
 
         self._run_bg("⏳ Updating item descriptions from Excel...", work)
+
+    def on_search_images_from_excel(self) -> None:
+        """
+        Load an Excel file, match codes to DB items, and write image paths back into the same file.
+        """
+        if not self.state.db:
+            messagebox.showwarning("Missing DB", "Please build/load the DB first (from PDF).")
+            return
+
+        xlsx_path = filedialog.askopenfilename(
+            title="Choose Excel file",
+            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")],
+        )
+        if not xlsx_path:
+            return
+        xlsx_path = str(xlsx_path)
+        export_path = str(Path(xlsx_path).with_name(f"{Path(xlsx_path).stem}_with_images{Path(xlsx_path).suffix}"))
+
+        def work():
+            # 1) detect header + code column using existing heuristics
+            _df, header_row, code_col = detect_excel_code_column(xlsx_path)
+
+            # 2) build DB code indexes (same logic as on_build_excel_db)
+            conn = self.state.db.connect()
+            try:
+                rows = conn.execute("SELECT code FROM items").fetchall()
+                db_codes = [str(r["code"]) for r in rows]
+            finally:
+                conn.close()
+
+            db_code_set = set(db_codes)
+            db_index = _build_db_code_index(db_codes)  # normalized -> original db code (unique only)
+
+            items = self.state.db.list_items()
+            code_to_images: dict[str, list[str]] = {str(it.code): list(it.images or []) for it in items}
+
+            # 3) update Excel in-place (preserve layout)
+            wb = load_workbook(xlsx_path)
+            ws = wb.active
+            header_row_1 = header_row + 1  # openpyxl is 1-based
+
+            # find code column index in header row
+            code_col_idx = None
+            for cell in ws[header_row_1]:
+                if _normalize_header_text(str(cell.value or "")) == _normalize_header_text(code_col):
+                    code_col_idx = cell.column
+                    break
+            if code_col_idx is None:
+                raise ValueError(f"Cannot find code column '{code_col}' in Excel header row.")
+
+            # write rows
+            updated = 0
+            total = 0
+            matched = 0
+            sample_excel_codes: list[str] = []
+            rows_with_images: list[tuple[int, list[str]]] = []
+            for r in range(header_row_1 + 1, ws.max_row + 1):
+                raw_code = ws.cell(row=r, column=code_col_idx).value
+                excel_code_str = str(raw_code or "").strip()
+                if not excel_code_str:
+                    continue
+                if len(sample_excel_codes) < 5:
+                    sample_excel_codes.append(excel_code_str)
+                total += 1
+
+                if excel_code_str in db_code_set:
+                    code_to_match = excel_code_str
+                else:
+                    code_to_match = db_index.get(_normalize_code_soft(excel_code_str), "")
+
+                imgs = code_to_images.get(code_to_match, []) if code_to_match else []
+                if code_to_match:
+                    matched += 1
+                if imgs:
+                    updated += 1
+                    rows_with_images.append((r, imgs))
+
+            # Insert image rows (bottom-up to keep indexes stable)
+            if rows_with_images:
+                px_to_emu = 9525
+                pad = 6
+
+                for r, imgs in rows_with_images:
+                    img_row = r + 1  # row below code
+                    ws.merge_cells(start_row=img_row, start_column=1, end_row=img_row, end_column=4)
+
+                    def col_width_px(col_idx: int) -> int:
+                        letter = get_column_letter(col_idx)
+                        w = ws.column_dimensions[letter].width
+                        if w is None:
+                            w = ws.column_dimensions["A"].width or 8.43
+                        # Excel column width to pixels (approx)
+                        return int(w * 7 + 5)
+
+                    # Load images and compute base sizes
+                    loaded: list[tuple[Image.Image, int, int]] = []
+                    for img_path in imgs:
+                        try:
+                            p = Path(img_path)
+                            if not p.exists():
+                                continue
+                            pil = Image.open(p).convert("RGBA")
+                            w, h = pil.size
+                            if h <= 0 or w <= 0:
+                                continue
+                            loaded.append((pil, w, h))
+                        except Exception:
+                            continue
+
+                    if not loaded:
+                        continue
+
+                    # Use original sizes; keep existing column widths and center images
+                    total_w = sum(w for _, w, _ in loaded) + pad * max(0, len(loaded) - 1)
+                    max_h = max(h for _, _, h in loaded)
+
+                    # Set row height (points). Approx: 1 pt ~= 1.333 px
+                    ws.row_dimensions[img_row].height = (max_h + 6) / 1.333
+
+                    available_w = sum(col_width_px(c) for c in range(1, 5))
+                    if available_w < 1:
+                        available_w = total_w
+                    x_off = max(0, int((available_w - total_w) / 2))
+                    col_widths = [col_width_px(c) for c in range(1, 5)]
+                    for pil, w, h in loaded:
+                        try:
+                            new_w = w
+                            new_h = h
+
+                            buf = io.BytesIO()
+                            pil.save(buf, format="PNG")
+                            buf.seek(0)
+                            xl_img = XLImage(buf)
+                            xl_img.width = new_w
+                            xl_img.height = new_h
+
+                            # translate x_off into (column, colOff)
+                            col_idx = 0
+                            col_off = x_off
+                            while col_idx < len(col_widths) - 1 and col_off >= col_widths[col_idx]:
+                                col_off -= col_widths[col_idx]
+                                col_idx += 1
+
+                            marker = AnchorMarker(
+                                col=col_idx,
+                                colOff=int(col_off * px_to_emu),
+                                row=img_row - 1,
+                                rowOff=0,
+                            )
+                            ext = XDRPositiveSize2D(new_w * px_to_emu, new_h * px_to_emu)
+                            xl_img.anchor = OneCellAnchor(_from=marker, ext=ext)
+                            ws.add_image(xl_img)
+
+                            x_off += new_w + pad
+                        except Exception:
+                            continue
+
+            wb.save(export_path)
+
+            if matched == 0:
+                sample_db_codes = db_codes[:5]
+                _safe_ui(
+                    self.root,
+                    lambda: messagebox.showwarning(
+                        "No matches",
+                        "No Excel codes matched DB codes.\n\n"
+                        f"Detected code column: {code_col}\n"
+                        f"Header row: {header_row_1}\n"
+                        f"Sample Excel codes: {sample_excel_codes}\n"
+                        f"Sample DB codes: {sample_db_codes}",
+                    ),
+                )
+
+            _safe_ui(self.root, lambda: messagebox.showinfo(
+                "Export done",
+                f"Codes matched: {matched}/{total}\nRows with images: {updated}/{total}\nSaved to: {export_path}",
+            ))
+            _safe_ui(
+                self.root,
+                lambda: self._set_status(f"✅ Exported images to Excel: matched {matched}/{total}, images {updated}/{total}")
+            )
+
+        self._run_bg("⏳ Extracting images by code...", work)
 
 
 ###################################################################################################

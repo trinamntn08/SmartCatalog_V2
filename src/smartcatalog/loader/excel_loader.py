@@ -174,6 +174,41 @@ def _detect_columns(df: pd.DataFrame) -> Tuple[str, str]:
     return str(code_col), str(desc_col)
 
 
+def _detect_code_column(df: pd.DataFrame) -> str:
+    """
+    Returns code column name only (for workflows that don't need description).
+    """
+    # build normalized map
+    norm_to_real = {}
+    for c in df.columns:
+        norm_to_real[_normalize_header_text(c)] = c
+
+    code_candidates = ("product code", "code", "item code", "mÃ£", "ma", "mÃ£ sp", "ma sp")
+
+    def find_exact(cands) -> Optional[str]:
+        for cand in cands:
+            key = _normalize_header_text(cand)
+            if key in norm_to_real:
+                return norm_to_real[key]
+        return None
+
+    code_col = find_exact(code_candidates)
+
+    if code_col is None:
+        for c in df.columns:
+            t = _normalize_header_text(c)
+            if "code" in t or t in ("mÃ£", "ma") or "mÃ£" in t:
+                code_col = c
+                break
+
+    if code_col is None:
+        raise ValueError(
+            f"Cannot detect code column. Found columns={list(df.columns)}."
+        )
+
+    return str(code_col)
+
+
 def _row_has_code_like(value) -> bool:
     s = _clean_cell_text(value)
     if not s:
@@ -251,3 +286,30 @@ def load_code_to_description_from_excel(
         )
 
     return out
+
+
+def detect_excel_code_column(
+    xlsx_path: str | Path,
+    sheet_name: Optional[str] = None,
+    max_scan_rows: int = 40,
+) -> Tuple[pd.DataFrame, int, str]:
+    """
+    Return (df, header_row_index, code_col_name).
+    df is parsed with header_row_index.
+    """
+    xlsx_path = Path(xlsx_path)
+
+    header_row = _find_header_row_index(xlsx_path, sheet_name=sheet_name, max_scan_rows=max_scan_rows)
+
+    df = _read_excel_one_sheet(xlsx_path, sheet_name, header=header_row)
+    if df is None or not isinstance(df, pd.DataFrame):
+        raise TypeError("Internal error: expected DataFrame after reading Excel.")
+
+    # Remove columns that are fully empty
+    df = df.dropna(axis=1, how="all")
+
+    if df.empty:
+        raise ValueError(f"Excel appears empty after header detection (header_row={header_row}).")
+
+    code_col = _detect_code_column(df)
+    return df, header_row, code_col
