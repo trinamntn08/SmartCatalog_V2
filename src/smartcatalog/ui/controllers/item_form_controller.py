@@ -9,7 +9,6 @@ class ItemFormControllerMixin:
     """
     Item form behavior:
     - Load selected item into form vars + UI panels
-    - Clear form
     - Save current form into selected item + DB
     - Persist selected item (used by other controllers)
 
@@ -71,24 +70,6 @@ class ItemFormControllerMixin:
             f"DESCRIPTION (combined):\n{it.description}\n\n"
             f"IMAGES ({len(it.images or [])}):\n{img_lines}"
         )
-
-    def _clear_form(self) -> None:
-        self._selected = None
-        self.state.selected_item_id = None
-
-        self.var_code.set("")
-        self.var_page.set("")
-        self.description_text.delete("1.0", "end")
-
-        self.var_category.set("")
-        self.var_author.set("")
-        self.var_dimension.set("")
-        self.var_small_description.set("")
-
-        self._clear_thumbnails()
-        self._set_preview_text("")
-
-        self.items_tree.selection_remove(self.items_tree.selection())
 
     def _persist_selected(self) -> None:
         if not getattr(self, "_selected", None) or not getattr(self.state, "db", None):

@@ -47,7 +47,16 @@ class CandidatesControllerMixin:
         self._cand_selected_label = ttk.Label(topbar, text="Selected: (none)")
         self._cand_selected_label.pack(side="left")
 
-        ttk.Button(topbar, text="Add", command=self._on_add_selected_page_image).pack(side="right")
+        btn_col = ttk.Frame(topbar)
+        btn_col.pack(side="right")
+
+        ttk.Button(btn_col, text="Add", command=self._on_add_selected_page_image).pack(fill="x")
+        if hasattr(self, "on_open_pdf_cropper"):
+            ttk.Button(
+                btn_col,
+                text="Chọn ảnh trực tiếp từ PDF",
+                command=self.on_open_pdf_cropper,
+            ).pack(fill="x", pady=(4, 0))
 
         self._cand_canvas = tk.Canvas(wrapper, highlightthickness=0, height=260)
         self._cand_scroll = ttk.Scrollbar(wrapper, orient="vertical", command=self._cand_canvas.yview)
@@ -60,7 +69,7 @@ class CandidatesControllerMixin:
         self._cand_canvas_window = self._cand_canvas.create_window((0, 0), window=self._cand_inner, anchor="nw")
 
         # FLOW layout settings
-        self._cand_thumb_size = (180, 180)  # change if you want smaller/larger
+        self._cand_thumb_size = (90, 90)  # change if you want smaller/larger
         self._cand_pad = 6
 
         # Keep PhotoImage refs (avoid GC)

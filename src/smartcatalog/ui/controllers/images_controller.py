@@ -38,14 +38,16 @@ class ImagesControllerMixin:
         self._thumb_refs.clear()
         self._full_img_ref = None
         self._selected_image_path = None
-        if hasattr(self, "image_preview_label"):
-            self.image_preview_label.configure(text="", image="")
 
     def _render_thumbnails(self, image_paths: list[str]) -> None:
+        prev_selected = self._selected_image_path
         self._clear_thumbnails()
+        if prev_selected and prev_selected in image_paths:
+            self._selected_image_path = prev_selected
 
         if not image_paths:
             return
+        selected_path = self._selected_image_path
         thumb_w = 90
         thumb_h = 90
         pad = 6
@@ -61,7 +63,7 @@ class ImagesControllerMixin:
         for i, p in enumerate(image_paths):
             r = i // cols
             c = i % cols
-            self._render_one_thumbnail(grid, p, r, c, pad, (thumb_w, thumb_h))
+            self._render_one_thumbnail(grid, p, r, c, pad, (thumb_w, thumb_h), selected_path)
 
     def _render_one_thumbnail(
         self,
@@ -71,8 +73,10 @@ class ImagesControllerMixin:
         col: int,
         pad: int,
         size: tuple[int, int],
+        selected_path: Optional[str],
     ) -> None:
-        cell = ttk.Frame(parent)
+        is_selected = bool(selected_path) and image_path == selected_path
+        cell = ttk.Frame(parent, relief=("solid" if is_selected else "flat"), borderwidth=(2 if is_selected else 0))
         cell.grid(row=row, column=col, padx=pad, pady=pad, sticky="nsew")
 
         # Load thumb
@@ -105,16 +109,6 @@ class ImagesControllerMixin:
 
     def _on_select_thumbnail(self, image_path: str) -> None:
         self._selected_image_path = image_path
-
-        # show larger preview
-        try:
-            pil = Image.open(image_path).convert("RGBA")
-            pil.thumbnail((280, 280))
-            self._full_img_ref = ImageTk.PhotoImage(pil)
-            self.image_preview_label.configure(image=self._full_img_ref, text="")
-        except Exception:
-            self._full_img_ref = None
-            self.image_preview_label.configure(text="", image="")
 
     # ----------------------------
     # Add / Remove
@@ -199,6 +193,42 @@ class ImagesControllerMixin:
             pass
         self._reload_selected_into_form()
         self._set_status("✅ Removed selected image")
+
+    def on_rotate_selected_image(self, degrees: int) -> None:
+        """
+        Rotate selected image on disk and refresh UI.
+        """
+        if not self._selected:
+            messagebox.showwarning("No item", "Please select an item first.")
+            return
+
+        img_path = (self._selected_image_path or "").strip()
+        if not img_path:
+            messagebox.showwarning("No image", "Click a thumbnail first (select an image to rotate).")
+            return
+
+        try:
+            pil = Image.open(img_path)
+            # Preserve mode; expand keeps full image
+            rotated = pil.rotate(degrees, expand=True)
+            rotated.save(img_path)
+        except Exception as e:
+            messagebox.showerror("Rotate failed", f"Could not rotate image:\n{e}")
+            return
+
+        # Refresh thumbnails + preview without losing selection
+        try:
+            if hasattr(self, "items_tree") and getattr(self._selected, "id", None):
+                self.items_tree.selection_set(str(self._selected.id))
+                self.items_tree.focus(str(self._selected.id))
+        except Exception:
+            pass
+
+        self._reload_selected_into_form()
+        # reselect the rotated image
+        self._selected_image_path = img_path
+        self._on_select_thumbnail(img_path)
+        self._set_status("✅ Rotated image")
 
     def _db_remove_image_from_item(self, *, item_id: int, img_path: str) -> bool:
         """

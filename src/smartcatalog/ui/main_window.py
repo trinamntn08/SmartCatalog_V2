@@ -180,7 +180,6 @@ class MainWindow(
         self._build_item_editor_section(parent)
         self._build_images_section(parent)
         self._build_candidates_section_simple(parent)
-        self._build_actions_section(parent)
 
 
     def _build_item_editor_section(self, parent) -> None:
@@ -188,19 +187,15 @@ class MainWindow(
         editor.pack(fill="x", pady=(0, 0))
         editor.columnconfigure(1, weight=1)
 
-        # --- Top row: PDF info + crop button (replaces "PDF Tools" box) ---
+        # --- Top row: PDF info + Save button ---
         top = ttk.Frame(editor)
         top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         top.columnconfigure(0, weight=1)
 
         self.pdf_tools_label = ttk.Label(top, text="No PDF selected")
         self.pdf_tools_label.grid(row=0, column=0, sticky="w")
-
-        ttk.Button(
-            top,
-            text="Chỉnh sửa trực tiếp từ PDF",
-            command=self.on_open_pdf_cropper,
-        ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self.btn_save = ttk.Button(top, text="💾 Save item", command=self.on_save_item)
+        self.btn_save.grid(row=0, column=1, sticky="e")
 
         # --- Fields (replaces "Item fields" box) ---
         r = 1
@@ -280,7 +275,7 @@ class MainWindow(
         if page:
             self.pdf_tools_label.configure(text=f"PDF: {pdf_name} | Item page: {page}")
         else:
-            self.pdf_tools_label.configure(text=f"PDF: {pdf_name} | (select an item with page)")
+            self.pdf_tools_label.configure(text=f"PDF: {pdf_name} | (select an item)")
 
 
     def _build_images_section(self, parent) -> None:
@@ -308,13 +303,14 @@ class MainWindow(
         right_col = ttk.Frame(images_frame)
         right_col.pack(side="left", fill="y", padx=(10, 0))
 
-        self.image_preview_label = ttk.Label(right_col, text="(click a thumbnail)")
+        self.image_preview_label = ttk.Label(right_col)
         self.image_preview_label.pack(fill="both", expand=False)
 
         btns = ttk.Frame(right_col)
         btns.pack(fill="x", pady=(8, 0))
 
         ttk.Button(btns, text="➕ Add", command=self.on_add_image).pack(fill="x", pady=(0, 6))
+        ttk.Button(btns, text="⟳ Rotate 90°", command=lambda: self.on_rotate_selected_image(90)).pack(fill="x", pady=(0, 6))
         ttk.Button(btns, text="➖ Remove selected", command=self.on_remove_selected_thumbnail).pack(fill="x")
 
     def _build_actions_section(self, parent) -> None:
@@ -324,11 +320,8 @@ class MainWindow(
         self.btn_save = ttk.Button(actions, text="💾 Save item", command=self.on_save_item)
         self.btn_save.pack(side="left", padx=(0, 6))
 
-        self.btn_reload = ttk.Button(actions, text="↩ Reload selected", command=self._reload_selected_into_form)
-        self.btn_reload.pack(side="left", padx=(0, 6))
-
-        self.btn_clear = ttk.Button(actions, text="🧹 Clear form", command=self._clear_form)
-        self.btn_clear.pack(side="left", padx=(0, 6))
+        self.btn_reload = None
+        self.btn_clear = None
     
     #-----------------------------------------------------
 
@@ -352,7 +345,7 @@ class MainWindow(
     def _apply_busy(self, busy: bool) -> None:
         self._busy.set(busy)
         for w in (self.btn_build_pdf, self.btn_refresh, self.btn_match_excel, self.btn_search_images,
-                  self.btn_save, self.btn_reload, self.btn_clear):
+                  self.btn_save):
             w.configure(state=("disabled" if busy else "normal"))
 
         if busy:
