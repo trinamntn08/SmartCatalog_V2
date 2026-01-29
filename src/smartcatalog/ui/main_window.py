@@ -246,7 +246,6 @@ class MainWindow(
             self._selected = next((x for x in self.state.items_cache if x.id == self._selected.id), self._selected)
             self._reload_selected_into_form()
 
-            # refresh "Page Images" for the selected item's page
             if self._selected and getattr(self._selected, "page", None):
                 self._render_candidates_for_page(int(self._selected.page) - 1)
 

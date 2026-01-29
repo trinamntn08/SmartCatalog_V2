@@ -39,27 +39,47 @@ class ImagesControllerMixin:
         self._full_img_ref = None
         self._selected_image_path = None
         if hasattr(self, "image_preview_label"):
-            self.image_preview_label.configure(text="(click a thumbnail)", image="")
+            self.image_preview_label.configure(text="", image="")
 
     def _render_thumbnails(self, image_paths: list[str]) -> None:
         self._clear_thumbnails()
 
         if not image_paths:
-            ttk.Label(self.thumb_inner, text="(no images)").pack(anchor="w", pady=4)
             return
+        thumb_w = 90
+        thumb_h = 90
+        pad = 6
+        canvas_w = int(getattr(self, "thumb_canvas", None).winfo_width() or 400)
+        cell_w = thumb_w + pad * 2
+        cols = max(1, int(canvas_w // max(1, cell_w)))
 
-        for p in image_paths:
-            self._render_one_thumbnail(p)
+        grid = ttk.Frame(self.thumb_inner)
+        grid.pack(fill="both", expand=True)
+        for c in range(cols):
+            grid.columnconfigure(c, weight=1)
 
-    def _render_one_thumbnail(self, image_path: str) -> None:
-        row = ttk.Frame(self.thumb_inner)
-        row.pack(fill="x", pady=3)
+        for i, p in enumerate(image_paths):
+            r = i // cols
+            c = i % cols
+            self._render_one_thumbnail(grid, p, r, c, pad, (thumb_w, thumb_h))
+
+    def _render_one_thumbnail(
+        self,
+        parent: ttk.Frame,
+        image_path: str,
+        row: int,
+        col: int,
+        pad: int,
+        size: tuple[int, int],
+    ) -> None:
+        cell = ttk.Frame(parent)
+        cell.grid(row=row, column=col, padx=pad, pady=pad, sticky="nsew")
 
         # Load thumb
         tk_img = None
         try:
             pil = Image.open(image_path).convert("RGBA")
-            pil.thumbnail((90, 90))
+            pil.thumbnail(size)
             tk_img = ImageTk.PhotoImage(pil)
         except Exception:
             tk_img = None
@@ -68,23 +88,20 @@ class ImagesControllerMixin:
             self._thumb_refs.append(tk_img)
 
             btn = ttk.Button(
-                row,
+                cell,
                 image=tk_img,
                 command=lambda p=image_path: self._on_select_thumbnail(p),
             )
-            btn.pack(side="left")
+            btn.pack()
         else:
             btn = ttk.Button(
-                row,
+                cell,
                 text="[Preview failed]",
                 width=14,
                 command=lambda p=image_path: self._on_select_thumbnail(p),
             )
-            btn.pack(side="left")
+            btn.pack()
 
-        # short filename
-        name = Path(image_path).name
-        ttk.Label(row, text=name).pack(side="left", padx=(8, 0))
 
     def _on_select_thumbnail(self, image_path: str) -> None:
         self._selected_image_path = image_path
@@ -97,7 +114,7 @@ class ImagesControllerMixin:
             self.image_preview_label.configure(image=self._full_img_ref, text="")
         except Exception:
             self._full_img_ref = None
-            self.image_preview_label.configure(text="(preview failed)", image="")
+            self.image_preview_label.configure(text="", image="")
 
     # ----------------------------
     # Add / Remove
@@ -172,8 +189,14 @@ class ImagesControllerMixin:
         # 2) Update in-memory list
         self._selected.images = [p for p in (self._selected.images or []) if p != img_path]
 
-        # 3) Refresh UI
+        # 3) Refresh UI + keep selection highlight
         self.refresh_items()
+        try:
+            if hasattr(self, "items_tree"):
+                self.items_tree.selection_set(str(item_id))
+                self.items_tree.focus(str(item_id))
+        except Exception:
+            pass
         self._reload_selected_into_form()
         self._set_status("✅ Removed selected image")
 

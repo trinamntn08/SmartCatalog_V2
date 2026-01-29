@@ -31,8 +31,7 @@ class CandidatesControllerMixin:
     - Cached per (pdf_path, page_index)
     - UI never blocks
     - Display as FLOW layout: horizontal first then wrap
-    - Clicking an image saves into assets + inserts asset row + links to selected item
-    - No texts, no buttons (image itself is the action)
+    - Click an image to select, then click Add to save into assets + link to selected item
     """
 
     # ----------------------------
@@ -41,6 +40,14 @@ class CandidatesControllerMixin:
     def _build_candidates_section_simple(self, parent: tk.Misc) -> None:
         wrapper = ttk.Labelframe(parent, text="Page Images", padding=8)
         wrapper.pack(fill="both", expand=True, pady=(8, 0))
+
+        topbar = ttk.Frame(wrapper)
+        topbar.pack(fill="x", pady=(0, 6))
+
+        self._cand_selected_label = ttk.Label(topbar, text="Selected: (none)")
+        self._cand_selected_label.pack(side="left")
+
+        ttk.Button(topbar, text="Add", command=self._on_add_selected_page_image).pack(side="right")
 
         self._cand_canvas = tk.Canvas(wrapper, highlightthickness=0, height=260)
         self._cand_scroll = ttk.Scrollbar(wrapper, orient="vertical", command=self._cand_canvas.yview)
@@ -73,6 +80,11 @@ class CandidatesControllerMixin:
         self._cand_last_page_index: Optional[int] = None
         self._cand_last_images: list[PageImage] = []
         self._cand_last_cols: int = 1
+        self._cand_selected_key: Optional[tuple[int, int]] = None
+        self._cand_drag_start: Optional[tuple[int, int]] = None
+        self._cand_dragging: bool = False
+        self._cand_drag_ghost: Optional[tk.Toplevel] = None
+        self._cand_drag_ghost_img: Optional[ImageTk.PhotoImage] = None
 
         # resize debounce
         self._cand_reflow_after_id: Optional[str] = None
@@ -220,6 +232,7 @@ class CandidatesControllerMixin:
         self._cand_last_images = images
 
         if not images:
+            ttk.Label(self._cand_inner, text="(no images on this page)").pack(anchor="w", pady=4)
             return
 
         # render using current canvas width
@@ -264,14 +277,23 @@ class CandidatesControllerMixin:
         for img in images:
             tk_img = self._make_thumb(img, (thumb_w, thumb_h))
 
-            # clickable image (no text)
-            btn = ttk.Button(
+            is_selected = self._cand_selected_key == (img.page_index, img.xref)
+            cell = ttk.Frame(
                 grid,
+                relief=("solid" if is_selected else "flat"),
+                borderwidth=(2 if is_selected else 0),
+            )
+            cell.grid(row=r, column=c, padx=pad, pady=pad, sticky="nsew")
+
+            img_btn = ttk.Button(
+                cell,
                 image=tk_img if tk_img is not None else "",
                 text="" if tk_img is not None else "X",
-                command=lambda im=img: self._on_add_page_image_to_db(im),
             )
-            btn.grid(row=r, column=c, padx=pad, pady=pad, sticky="nsew")
+            img_btn.pack(fill="both", expand=False)
+            img_btn.bind("<ButtonPress-1>", lambda e, im=img: self._on_drag_start(e, im))
+            img_btn.bind("<B1-Motion>", self._on_drag_motion)
+            img_btn.bind("<ButtonRelease-1>", lambda e, im=img: self._on_drag_release(e, im))
 
             if tk_img is not None:
                 self._cand_photo_refs.append(tk_img)
@@ -288,6 +310,112 @@ class CandidatesControllerMixin:
             return ImageTk.PhotoImage(pil)
         except Exception:
             return None
+
+    def _on_select_page_image(self, img: PageImage) -> None:
+        self._cand_selected_key = (img.page_index, img.xref)
+        if hasattr(self, "_cand_selected_label"):
+            self._cand_selected_label.configure(text=f"Selected: page {img.page_index + 1} xref {img.xref}")
+        # reflow to show selection highlight
+        width = int(self._cand_canvas.winfo_width() or 600)
+        self._cand_reflow(width)
+
+    def _on_drag_start(self, event: tk.Event, img: PageImage) -> None:
+        self._cand_drag_start = (int(event.x_root), int(event.y_root))
+        self._cand_dragging = False
+        self._on_select_page_image(img)
+
+    def _on_drag_motion(self, event: tk.Event) -> None:
+        if not self._cand_drag_start:
+            return
+        dx = abs(int(event.x_root) - self._cand_drag_start[0])
+        dy = abs(int(event.y_root) - self._cand_drag_start[1])
+        if dx + dy >= 6:
+            self._cand_dragging = True
+            if self._cand_drag_ghost is None:
+                self._show_drag_ghost(event)
+            else:
+                self._move_drag_ghost(event)
+
+    def _on_drag_release(self, event: tk.Event, img: PageImage) -> None:
+        dragging = self._cand_dragging
+        self._cand_drag_start = None
+        self._cand_dragging = False
+        self._hide_drag_ghost()
+
+        if dragging and self._is_over_images_panel(int(event.x_root), int(event.y_root)):
+            self._on_add_page_image_to_db(img)
+
+    def _is_over_images_panel(self, x_root: int, y_root: int) -> bool:
+        target = getattr(self, "thumb_canvas", None)
+        if target is None:
+            return False
+        try:
+            x0 = target.winfo_rootx()
+            y0 = target.winfo_rooty()
+            x1 = x0 + target.winfo_width()
+            y1 = y0 + target.winfo_height()
+            return x0 <= x_root <= x1 and y0 <= y_root <= y1
+        except Exception:
+            return False
+
+    def _show_drag_ghost(self, event: tk.Event) -> None:
+        if self._cand_drag_ghost is not None:
+            return
+        if not self._cand_selected_key:
+            return
+        img = None
+        for it in self._cand_last_images or []:
+            if (it.page_index, it.xref) == self._cand_selected_key:
+                img = it
+                break
+        if img is None:
+            return
+
+        try:
+            pil = Image.open(io.BytesIO(img.bytes_)).convert("RGBA")
+            pil.thumbnail((96, 96))
+            self._cand_drag_ghost_img = ImageTk.PhotoImage(pil)
+        except Exception:
+            self._cand_drag_ghost_img = None
+
+        ghost = tk.Toplevel(self.root)
+        ghost.overrideredirect(True)
+        ghost.attributes("-topmost", True)
+        ghost.attributes("-alpha", 0.8)
+        lbl = ttk.Label(ghost, image=self._cand_drag_ghost_img, text="")
+        lbl.pack()
+        self._cand_drag_ghost = ghost
+        self._move_drag_ghost(event)
+
+    def _move_drag_ghost(self, event: tk.Event) -> None:
+        if self._cand_drag_ghost is None:
+            return
+        x = int(event.x_root) + 8
+        y = int(event.y_root) + 8
+        try:
+            self._cand_drag_ghost.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+    def _hide_drag_ghost(self) -> None:
+        if self._cand_drag_ghost is None:
+            return
+        try:
+            self._cand_drag_ghost.destroy()
+        except Exception:
+            pass
+        self._cand_drag_ghost = None
+        self._cand_drag_ghost_img = None
+
+    def _on_add_selected_page_image(self) -> None:
+        if not self._cand_selected_key:
+            messagebox.showwarning("No image", "Please click an image first.")
+            return
+        for img in self._cand_last_images or []:
+            if (img.page_index, img.xref) == self._cand_selected_key:
+                self._on_add_page_image_to_db(img)
+                return
+        messagebox.showwarning("No image", "Selected image is no longer available.")
 
     # ----------------------------
     # Add to DB (SAVE asset + INSERT asset row + LINK to selected item)
@@ -319,16 +447,8 @@ class CandidatesControllerMixin:
             filename = f"page{img.page_index + 1:04d}_xref{img.xref}.{img.ext}"
             path = assets_dir / filename
 
-            if path.exists():
-                i = 2
-                while True:
-                    alt = assets_dir / f"page{img.page_index + 1:04d}_xref{img.xref}_{i}.{img.ext}"
-                    if not alt.exists():
-                        path = alt
-                        break
-                    i += 1
-
-            path.write_bytes(img.bytes_)
+            if not path.exists():
+                path.write_bytes(img.bytes_)
 
             asset_id = self.state.db.insert_asset(
                 file_path=str(path),
@@ -349,9 +469,13 @@ class CandidatesControllerMixin:
                 is_primary=False,
             )
 
-            # refresh UI selection
-            if hasattr(self, "refresh_items"):
-                self.refresh_items()
+            # refresh UI selection without losing current item
+            try:
+                new_imgs = self.state.db.list_asset_paths_for_item(int(item_id))
+                if getattr(self, "_selected", None) is not None:
+                    self._selected.images = new_imgs
+            except Exception:
+                pass
             if hasattr(self, "_reload_selected_into_form"):
                 self._reload_selected_into_form()
 

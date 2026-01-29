@@ -106,6 +106,7 @@ def _register_page_assets_and_link_to_items(
     page_no: int,
     item_ids: list[int],
     image_paths: list[str],
+    link_to_items: bool = True,
 ) -> None:
     """
     New behavior (additive): store page images as assets and link to each item.
@@ -114,13 +115,15 @@ def _register_page_assets_and_link_to_items(
     We keep it tolerant:
     - If DB doesn't have new methods (older code), it will just no-op.
     """
-    if not image_paths or not item_ids:
+    if not image_paths:
+        return
+    if link_to_items and not item_ids:
         return
 
     # If user hasn't updated CatalogDB yet, don't crash
     upsert_asset = getattr(state.db, "upsert_asset", None)
     link_asset_to_item = getattr(state.db, "link_asset_to_item", None)
-    if not callable(upsert_asset) or not callable(link_asset_to_item):
+    if not callable(upsert_asset) or (link_to_items and not callable(link_asset_to_item)):
         return
 
     # create assets once per page image, then link to all items on page
@@ -135,16 +138,17 @@ def _register_page_assets_and_link_to_items(
             conn=conn,
         )
 
-        for item_id in item_ids:
-            link_asset_to_item(
-                item_id=item_id,
-                asset_id=asset_id,
-                match_method="heuristic",  # currently: page-level heuristic
-                score=None,
-                verified=False,
-                is_primary=False,
-                conn=conn,
-            )
+        if link_to_items:
+            for item_id in item_ids:
+                link_asset_to_item(
+                    item_id=item_id,
+                    asset_id=asset_id,
+                    match_method="heuristic",  # currently: page-level heuristic
+                    score=None,
+                    verified=False,
+                    is_primary=False,
+                    conn=conn,
+                )
 
 
 def build_or_update_db_from_pdf(
@@ -160,12 +164,11 @@ def build_or_update_db_from_pdf(
 
     Current behavior preserved:
     - Extract items per page
-    - Extract images per page
-    - For each item: upsert_by_code(... image_paths = page images)
+    - For each item: upsert_by_code(... image_paths = [])
 
     New behavior added (non-breaking):
-    - Save images as 'assets' (per page)
-    - Link assets to items via 'item_asset_links'
+    - (disabled) Save images as 'assets' (per page)
+    - (disabled) Link assets to items via 'item_asset_links'
     """
     if not state.catalog_pdf_path:
         raise RuntimeError("state.catalog_pdf_path is not set. Choose a PDF first.")
@@ -175,9 +178,6 @@ def build_or_update_db_from_pdf(
     pdf_path = Path(state.catalog_pdf_path)
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
-
-    images_root = state.data_dir / "images"
-    images_root.mkdir(parents=True, exist_ok=True)
 
     _set_status(status_message, f"Opening PDF: {pdf_path.name}")
 
@@ -205,12 +205,7 @@ def build_or_update_db_from_pdf(
                     _set_status(status_message, f"Scanning page {page_no}/{end_idx+1}...")
                 continue
 
-            page_img_dir = images_root / f"p{page_no:04d}"
-            image_paths = _extract_large_images(doc, page, page_img_dir, min_side=20)
-
-            # upsert items first (legacy behavior), collect their item_ids
-            page_item_ids: list[int] = []
-
+            # upsert items first (legacy behavior)
             for it in items:
                 desc = " | ".join([p for p in (it.category, it.author, it.dimension, it.small_description) if p])
 
@@ -222,22 +217,11 @@ def build_or_update_db_from_pdf(
                     dimension=it.dimension,
                     small_description=it.small_description,
                     description=desc,
-                    image_paths=image_paths,  # legacy table still filled
+                    image_paths=[],
                     conn=conn,
                 )
 
-                page_item_ids.append(int(item_id))
                 inserted += 1
-
-            # new additive behavior: register page images as assets and link to items
-            _register_page_assets_and_link_to_items(
-                state=state,
-                conn=conn,
-                pdf_path=pdf_path,
-                page_no=page_no,
-                item_ids=page_item_ids,
-                image_paths=image_paths,
-            )
 
             if page_no % 10 == 0:
                 _set_status(status_message, f"Processed page {page_no}/{end_idx+1} | items upserted: {inserted}")
@@ -245,7 +229,7 @@ def build_or_update_db_from_pdf(
                     source_preview,
                     f"Page {page_no}\n"
                     f"Found {len(items)} item codes\n"
-                    f"Saved {len(image_paths)} images (filtered)\n\n"
+                    f"Saved 0 images (disabled)\n\n"
                     f"Examples:\n"
                     + "\n".join([
                         f"- {it.code}: {it.category} | {it.author} | {it.small_description} | {it.dimension}"
