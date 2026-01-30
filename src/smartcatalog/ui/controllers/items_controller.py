@@ -40,7 +40,7 @@ class ItemsControllerMixin:
                 f"{it.id} {it.code} {it.page or ''} "
                 f"{getattr(it,'category','')} {getattr(it,'author','')} "
                 f"{getattr(it,'dimension','')} {getattr(it,'small_description','')} "
-                f"{it.description} {getattr(it,'description_excel','')}"
+                f"{it.description} {getattr(it,'description_excel','')} {getattr(it,'description_vietnames_from_excel','')}"
             ).lower()
 
             if q and q not in text:

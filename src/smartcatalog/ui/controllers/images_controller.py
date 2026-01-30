@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 from typing import Optional
 
 import tkinter as tk
@@ -39,7 +40,7 @@ class ImagesControllerMixin:
         self._full_img_ref = None
         self._selected_image_path = None
 
-    def _render_thumbnails(self, image_paths: list[str]) -> None:
+    def _render_thumbnails(self, image_paths: list[str], source_map: Optional[dict[str, str]] = None) -> None:
         prev_selected = self._selected_image_path
         self._clear_thumbnails()
         if prev_selected and prev_selected in image_paths:
@@ -63,7 +64,16 @@ class ImagesControllerMixin:
         for i, p in enumerate(image_paths):
             r = i // cols
             c = i % cols
-            self._render_one_thumbnail(grid, p, r, c, pad, (thumb_w, thumb_h), selected_path)
+            self._render_one_thumbnail(
+                grid,
+                p,
+                r,
+                c,
+                pad,
+                (thumb_w, thumb_h),
+                selected_path,
+                source_map or {},
+            )
 
     def _render_one_thumbnail(
         self,
@@ -74,10 +84,26 @@ class ImagesControllerMixin:
         pad: int,
         size: tuple[int, int],
         selected_path: Optional[str],
+        source_map: dict[str, str],
     ) -> None:
         is_selected = bool(selected_path) and image_path == selected_path
         cell = ttk.Frame(parent, relief=("solid" if is_selected else "flat"), borderwidth=(2 if is_selected else 0))
         cell.grid(row=row, column=col, padx=pad, pady=pad, sticky="nsew")
+
+        def _badge_text(source: str) -> str:
+            s = (source or "").strip().lower()
+            if s == "excel":
+                return "Excel"
+            if s == "manual_crop":
+                return "Cắt tay"
+            if s in ("extract", "page_extract"):
+                return "Từ trang"
+            if s == "add":
+                return "Thêm"
+            return s.upper() if s else ""
+
+        key = os.path.normcase(os.path.normpath(image_path))
+        badge = _badge_text(source_map.get(key, ""))
 
         # Load thumb
         tk_img = None
@@ -105,6 +131,15 @@ class ImagesControllerMixin:
                 command=lambda p=image_path: self._on_select_thumbnail(p),
             )
             btn.pack()
+
+        if badge:
+            b = ttk.Label(
+                cell,
+                text=badge,
+                font=("Segoe UI", 7),
+                foreground="#555555",
+            )
+            b.pack(pady=(2, 0))
 
 
     def _on_select_thumbnail(self, image_path: str) -> None:
@@ -143,6 +178,7 @@ class ImagesControllerMixin:
                 small_description=getattr(self._selected, "small_description", "") or "",
                 description=self._selected.description or "",
                 description_excel=getattr(self._selected, "description_excel", "") or "",
+                description_vietnames_from_excel=getattr(self._selected, "description_vietnames_from_excel", "") or "",
                 pdf_path=getattr(self._selected, "pdf_path", "") or "",
                 image_paths=self._selected.images,
             )

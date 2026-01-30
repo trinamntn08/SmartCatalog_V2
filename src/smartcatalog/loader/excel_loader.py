@@ -288,6 +288,77 @@ def load_code_to_description_from_excel(
     return out
 
 
+def load_code_to_vi_en_from_excel(
+    xlsx_path: str | Path,
+    sheet_name: Optional[str] = None,
+    max_scan_rows: int = 40,
+) -> Dict[str, tuple[str, str]]:
+    """
+    Returns { code: (desc_vi, desc_en) }.
+
+    Assumes:
+      - The "Product Description" column holds Vietnamese text on the code row.
+      - The English description appears in the next row, with empty code cell.
+    """
+    xlsx_path = Path(xlsx_path)
+
+    header_row = _find_header_row_index(xlsx_path, sheet_name=sheet_name, max_scan_rows=max_scan_rows)
+
+    df = _read_excel_one_sheet(xlsx_path, sheet_name, header=header_row)
+    if df is None or not isinstance(df, pd.DataFrame):
+        raise TypeError("Internal error: expected DataFrame after reading Excel.")
+
+    # Remove columns that are fully empty
+    df = df.dropna(axis=1, how="all")
+
+    if df.empty:
+        raise ValueError(f"Excel appears empty after header detection (header_row={header_row}).")
+
+    # Detect columns
+    code_col, desc_col = _detect_columns(df)
+
+    out: Dict[str, tuple[str, str]] = {}
+
+    # Iterate with index to look at next row for English
+    rows = list(df.iterrows())
+    for i, (_idx, row) in enumerate(rows):
+        raw_code = row.get(code_col)
+        raw_desc = row.get(desc_col)
+
+        if pd.isna(raw_code) or pd.isna(raw_desc):
+            continue
+
+        code = _clean_cell_text(raw_code)
+        desc_vi = _clean_cell_text(raw_desc)
+
+        if not code or not desc_vi:
+            continue
+
+        # Filter obvious title rows / junk by requiring code-like pattern
+        if not _row_has_code_like(code):
+            continue
+
+        desc_en = ""
+        if i + 1 < len(rows):
+            next_row = rows[i + 1][1]
+            next_code = _clean_cell_text(next_row.get(code_col))
+            next_desc = _clean_cell_text(next_row.get(desc_col))
+            if not next_code and next_desc:
+                desc_en = next_desc
+
+        out[code] = (desc_vi, desc_en)
+
+    if not out:
+        raise ValueError(
+            "No (code -> description) rows extracted.\n"
+            f"Detected header_row={header_row}\n"
+            f"Detected code_col={code_col}, desc_col={desc_col}\n"
+            f"Columns={list(df.columns)}"
+        )
+
+    return out
+
+
 def detect_excel_code_column(
     xlsx_path: str | Path,
     sheet_name: Optional[str] = None,

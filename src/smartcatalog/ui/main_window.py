@@ -17,10 +17,11 @@ from smartcatalog.ui.controllers.candidates_controller import CandidatesControll
 from smartcatalog.ui.controllers.images_controller import ImagesControllerMixin
 from smartcatalog.ui.controllers.items_controller import ItemsControllerMixin
 from smartcatalog.ui.controllers.item_form_controller import ItemFormControllerMixin
-from smartcatalog.loader.excel_loader import load_code_to_description_from_excel, detect_excel_code_column
+from smartcatalog.loader.excel_loader import load_code_to_vi_en_from_excel, detect_excel_code_column
 from smartcatalog.ui.pdf_crop_window import PdfCropWindow
 
 import re
+import hashlib
 from bisect import bisect_right
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -274,9 +275,14 @@ class MainWindow(
         ttk.Entry(editor, textvariable=self.var_small_description).grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
-        ttk.Label(editor, text="Description from excel").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(editor, text="Description EN from excel").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         self.description_excel_text = scrolledtext.ScrolledText(editor, wrap="word", height=4)
         self.description_excel_text.grid(row=r, column=1, sticky="ew", pady=3)
+        r += 1
+
+        ttk.Label(editor, text="Description VI from excel").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        self.description_vietnames_from_excel_text = scrolledtext.ScrolledText(editor, wrap="word", height=4)
+        self.description_vietnames_from_excel_text.grid(row=r, column=1, sticky="ew", pady=3)
 
     def on_open_pdf_cropper(self) -> None:
         if not self.state.catalog_pdf_path:
@@ -514,20 +520,20 @@ class MainWindow(
             return
 
         def work():
-            # 1) read excel (all sheets) -> {excel_code: description}
-            mapping: dict[str, str] = {}
+            # 1) read excel (all sheets) -> {excel_code: (vi, en)}
+            mapping: dict[str, tuple[str, str]] = {}
             wb = load_workbook(xlsx_path)
             sheet_names = list(wb.sheetnames)
             for sn in sheet_names:
                 try:
-                    m = load_code_to_description_from_excel(xlsx_path, sheet_name=sn)
+                    m = load_code_to_vi_en_from_excel(xlsx_path, sheet_name=sn)
                 except Exception:
                     continue
                 for k, v in m.items():
                     key = str(k).strip()
                     if key in mapping:
                         continue
-                    mapping[key] = str(v).strip()
+                    mapping[key] = (str(v[0]).strip(), str(v[1]).strip())
 
             # 2) read all DB codes once (exact + normalized index)
             conn = self.state.db.connect()
@@ -544,6 +550,35 @@ class MainWindow(
             image_map: dict[str, list[str]] = {}
             image_rows_total = 0
             try:
+                hash_to_path: dict[str, str] = {}
+                per_code_hashes: dict[str, set[str]] = {}
+                first_code_occurrence: dict[str, tuple[str, int]] = {}
+
+                # Pre-pass: find first (sheet, row) occurrence of each code across all sheets
+                for sn in sheet_names:
+                    ws = wb[sn]
+                    try:
+                        _df, header_row, code_col = detect_excel_code_column(xlsx_path, sheet_name=sn)
+                    except Exception:
+                        continue
+                    header_row_1 = header_row + 1  # openpyxl is 1-based
+
+                    code_col_idx = None
+                    for cell in ws[header_row_1]:
+                        if _normalize_header_text(str(cell.value or "")) == _normalize_header_text(code_col):
+                            code_col_idx = cell.column
+                            break
+                    if code_col_idx is None:
+                        continue
+
+                    for r in range(header_row_1 + 1, ws.max_row + 1):
+                        raw_code = ws.cell(row=r, column=code_col_idx).value
+                        excel_code_str = str(raw_code or "").strip()
+                        if not excel_code_str:
+                            continue
+                        if excel_code_str not in first_code_occurrence:
+                            first_code_occurrence[excel_code_str] = (sn, r)
+
                 for sn in sheet_names:
                     ws = wb[sn]
                     try:
@@ -593,22 +628,41 @@ class MainWindow(
                             excel_code = row_to_code.get(code_row, "")
                             if not excel_code:
                                 continue
+                            if first_code_occurrence.get(excel_code) != (sn, code_row):
+                                continue
 
                             pil = _image_to_pil(img)
                             if pil is None:
                                 continue
 
+                            # dedupe by image content (hash of PNG bytes)
+                            buf = io.BytesIO()
+                            pil.convert("RGBA").save(buf, format="PNG")
+                            data = buf.getvalue()
+                            img_hash = hashlib.sha256(data).hexdigest()
+
+                            code_hashes = per_code_hashes.setdefault(excel_code, set())
+                            if img_hash in code_hashes:
+                                continue
+                            code_hashes.add(img_hash)
+
                             count = per_code_counts.get(excel_code, 0) + 1
                             per_code_counts[excel_code] = count
 
                             safe_code = _sanitize_filename(excel_code)
-                            out_path = out_dir / f"{safe_sheet}_{safe_code}_{count:02d}.png"
-                            try:
-                                pil.convert("RGBA").save(out_path, format="PNG")
-                            except Exception:
-                                continue
+                            out_path = out_dir / f"{safe_sheet}_{safe_code}_{img_hash[:10]}.png"
+                            path_str = hash_to_path.get(img_hash)
+                            if path_str is None:
+                                try:
+                                    out_path.write_bytes(data)
+                                except Exception:
+                                    continue
+                                path_str = str(out_path)
+                                hash_to_path[img_hash] = path_str
 
-                            image_map.setdefault(excel_code, []).append(str(out_path))
+                            lst = image_map.setdefault(excel_code, [])
+                            if path_str not in lst:
+                                lst.append(path_str)
             except Exception:
                 image_map = {}
 
@@ -623,7 +677,7 @@ class MainWindow(
             # 4) update DB (description + images) using one connection
             conn = self.state.db.connect()
             try:
-                for excel_code, desc in mapping.items():
+                for excel_code, desc_pair in mapping.items():
                     i += 1
                     excel_code_str = str(excel_code).strip()
 
@@ -635,9 +689,10 @@ class MainWindow(
                         code_to_update = db_index.get(_normalize_code_soft(excel_code_str), "")
 
                     if code_to_update:
+                        desc_vi, desc_en = desc_pair
                         cur = conn.execute(
-                            "UPDATE items SET description_excel=? WHERE code=?",
-                            (str(desc).strip(), code_to_update),
+                            "UPDATE items SET description_excel=?, description_vietnames_from_excel=? WHERE code=?",
+                            (str(desc_en).strip(), str(desc_vi).strip(), code_to_update),
                         )
                         if cur.rowcount > 0:
                             updated += 1
@@ -658,6 +713,14 @@ class MainWindow(
                 # images: link excel images into assets + item_asset_links (preferred)
                 excel_asset_pdf_path = f"excel:{xlsx_path}"
                 for excel_code, img_paths in image_map.items():
+                    # keep order but drop duplicates
+                    seen: set[str] = set()
+                    unique_paths: list[str] = []
+                    for p in img_paths:
+                        if p in seen:
+                            continue
+                        seen.add(p)
+                        unique_paths.append(p)
                     excel_code_str = str(excel_code).strip()
                     if excel_code_str in db_code_set:
                         code_to_update = excel_code_str
@@ -676,7 +739,8 @@ class MainWindow(
                     item_id = int(row["id"])
                     # replace existing asset links so Excel images show in UI
                     conn.execute("DELETE FROM item_asset_links WHERE item_id=?", (item_id,))
-                    for idx, p in enumerate(img_paths):
+                    conn.execute("DELETE FROM item_images WHERE item_id=?", (item_id,))
+                    for idx, p in enumerate(unique_paths):
                         asset_row = conn.execute(
                             "SELECT id FROM assets WHERE pdf_path=? AND page=? AND asset_path=?",
                             (excel_asset_pdf_path, 0, p),
@@ -839,6 +903,9 @@ class MainWindow(
                             if not p.exists():
                                 continue
                             pil = Image.open(p).convert("RGBA")
+                            # Rotate to landscape if needed
+                            if pil.height > pil.width:
+                                pil = pil.rotate(90, expand=True)
                             w, h = pil.size
                             if h <= 0 or w <= 0:
                                 continue
@@ -849,25 +916,42 @@ class MainWindow(
                     if not loaded:
                         continue
 
+                    # Order images: small (left) -> big (right)
+                    loaded.sort(key=lambda t: t[1] * t[2])
+
                     # Use original sizes; keep existing column widths and center images
                     total_w = sum(w for _, w, _ in loaded) + pad * max(0, len(loaded) - 1)
                     max_h = max(h for _, _, h in loaded)
 
                     # Set row height (points). Approx: 1 pt ~= 1.333 px
-                    ws.row_dimensions[img_row].height = (max_h + 6) / 1.333
+                    min_h = max_h + 20
+                    ws.row_dimensions[img_row].height = max(min_h, max_h + 6) / 1.333
 
                     available_w = sum(col_width_px(c) for c in range(1, 5))
                     if available_w < 1:
                         available_w = total_w
                     x_off = max(0, int((available_w - total_w) / 2))
                     col_widths = [col_width_px(c) for c in range(1, 5)]
+                    v_pad = 10
+                    row_height_px = int((ws.row_dimensions[img_row].height or 0) * 1.333)
+                    target_h = max(1, row_height_px - (v_pad * 2))
+
+                    # Global scale to fit both row height and merged column width
+                    scale_h = 1.0 if max_h <= target_h else (target_h / float(max_h))
+                    scale_w = 1.0 if total_w <= available_w else (available_w / float(total_w))
+                    scale = min(1.0, scale_h, scale_w)
+
                     for pil, w, h in loaded:
                         try:
-                            new_w = w
-                            new_h = h
+                            new_w = max(1, int(w * scale))
+                            new_h = max(1, int(h * scale))
 
                             buf = io.BytesIO()
-                            pil.save(buf, format="PNG")
+                            if new_w != w or new_h != h:
+                                pil_resized = pil.resize((new_w, new_h), Image.LANCZOS)
+                            else:
+                                pil_resized = pil
+                            pil_resized.save(buf, format="PNG")
                             buf.seek(0)
                             xl_img = XLImage(buf)
                             xl_img.width = new_w
@@ -880,11 +964,18 @@ class MainWindow(
                                 col_off -= col_widths[col_idx]
                                 col_idx += 1
 
+                            row_height_px = int((ws.row_dimensions[img_row].height or 0) * 1.333)
+                            y_off = 0
+                            if row_height_px > new_h + v_pad * 2:
+                                y_off = int((row_height_px - new_h) / 2)
+                            elif row_height_px > new_h:
+                                y_off = v_pad
+
                             marker = AnchorMarker(
                                 col=col_idx,
                                 colOff=int(col_off * px_to_emu),
                                 row=img_row - 1,
-                                rowOff=0,
+                                rowOff=int(y_off * px_to_emu),
                             )
                             ext = XDRPositiveSize2D(new_w * px_to_emu, new_h * px_to_emu)
                             xl_img.anchor = OneCellAnchor(_from=marker, ext=ext)

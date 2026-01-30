@@ -14,6 +14,7 @@ class CatalogItem:
     code: str
     description: str
     description_excel: str
+    description_vietnames_from_excel: str
     pdf_path: str
     page: Optional[int]
     images: List[str]

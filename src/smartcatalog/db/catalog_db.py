@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS items (
   code TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   description_excel TEXT NOT NULL DEFAULT '',
+  description_vietnames_from_excel TEXT NOT NULL DEFAULT '',
   pdf_path TEXT NOT NULL DEFAULT '',
   page INTEGER,
 
@@ -125,6 +126,7 @@ class CatalogDB:
             "dimension": "TEXT NOT NULL DEFAULT ''",
             "small_description": "TEXT NOT NULL DEFAULT ''",
             "description_excel": "TEXT NOT NULL DEFAULT ''",
+            "description_vietnames_from_excel": "TEXT NOT NULL DEFAULT ''",
             "pdf_path": "TEXT NOT NULL DEFAULT ''",
         }
         cur = conn.cursor()
@@ -173,6 +175,8 @@ class CatalogDB:
             for opt in ["category", "author", "dimension", "small_description", "images", "description_excel", "pdf_path"]:
                 if opt in cols:
                     select_cols.append(opt)
+            if "description_vietnames_from_excel" in cols:
+                select_cols.append("description_vietnames_from_excel")
 
             sql = f"SELECT {', '.join(select_cols)} FROM items ORDER BY id"
             rows = conn.execute(sql).fetchall()
@@ -257,6 +261,7 @@ class CatalogDB:
                         code=str(get("code", "") or ""),
                         description=str(get("description", "") or ""),
                         description_excel=str(get("description_excel", "") or ""),
+                        description_vietnames_from_excel=str(get("description_vietnames_from_excel", "") or ""),
                         pdf_path=str(get("pdf_path", "") or ""),
                         page=(int(get("page")) if get("page") not in (None, "") else None),
                         images=images,
@@ -306,6 +311,7 @@ class CatalogDB:
                 """
                 SELECT id, code, description, page,
                        description_excel, pdf_path, category, author, dimension, small_description
+                       , description_vietnames_from_excel
                 FROM items
                 WHERE code=?
                 """,
@@ -324,6 +330,7 @@ class CatalogDB:
                 code=str(r["code"]),
                 description=str(r["description"] or ""),
                 description_excel=str(r["description_excel"] or ""),
+                description_vietnames_from_excel=str(r["description_vietnames_from_excel"] or ""),
                 pdf_path=str(r["pdf_path"] or ""),
                 page=(int(r["page"]) if r["page"] is not None else None),
                 category=str(r["category"] or ""),
@@ -503,6 +510,50 @@ class CatalogDB:
             if owns:
                 conn.close()
 
+    def list_image_sources_for_item(
+        self,
+        item_id: int,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> List[tuple[str, str]]:
+        """
+        Returns list of (path, source) for the item, ordered like the UI.
+        If there are asset links, uses assets.source; otherwise falls back to legacy item_images (source='add').
+        """
+        owns = conn is None
+        if conn is None:
+            conn = self.connect()
+            self._ensure_schema(conn)
+            self._ensure_columns(conn)
+
+        try:
+            rows = conn.execute(
+                """
+                SELECT a.asset_path AS asset_path, a.source AS source
+                FROM item_asset_links l
+                JOIN assets a ON a.id = l.asset_id
+                WHERE l.item_id=?
+                ORDER BY l.is_primary DESC, l.id ASC
+                """,
+                (int(item_id),),
+            ).fetchall()
+            if rows:
+                return [(str(r["asset_path"]), str(r["source"] or "")) for r in rows]
+
+            # Fallback: legacy table
+            rows = conn.execute(
+                """
+                SELECT image_path AS image_path
+                FROM item_images
+                WHERE item_id=?
+                ORDER BY id ASC
+                """,
+                (int(item_id),),
+            ).fetchall()
+            return [(str(r["image_path"]), "add") for r in rows]
+        finally:
+            if owns:
+                conn.close()
+
     # ---------- Asset links (new) ----------
     def list_asset_links_for_item(self, item_id: int, conn: Optional[sqlite3.Connection] = None) -> List[sqlite3.Row]:
         """
@@ -592,6 +643,7 @@ class CatalogDB:
         small_description: str = "",
         description: str = "",
         description_excel: Optional[str] = None,
+        description_vietnames_from_excel: Optional[str] = None,
         pdf_path: Optional[str] = None,
         image_paths: List[str] | None = None,
         conn: Optional[sqlite3.Connection] = None,
@@ -615,7 +667,7 @@ class CatalogDB:
 
         try:
             row = conn.execute(
-                "SELECT id, description_excel, pdf_path FROM items WHERE code=?",
+                "SELECT id, description_excel, description_vietnames_from_excel, pdf_path FROM items WHERE code=?",
                 (code,),
             ).fetchone()
 
@@ -623,6 +675,8 @@ class CatalogDB:
                 item_id = int(row["id"])
                 if description_excel is None:
                     description_excel = str(row["description_excel"] or "")
+                if description_vietnames_from_excel is None:
+                    description_vietnames_from_excel = str(row["description_vietnames_from_excel"] or "")
                 if pdf_path is None:
                     pdf_path = str(row["pdf_path"] or "")
                 conn.execute(
@@ -630,6 +684,7 @@ class CatalogDB:
                     UPDATE items
                     SET description=?,
                         description_excel=?,
+                        description_vietnames_from_excel=?,
                         pdf_path=?,
                         page=?,
                         category=?,
@@ -638,20 +693,44 @@ class CatalogDB:
                         small_description=?
                     WHERE id=?
                     """,
-                    (description, description_excel, pdf_path, page, category, author, dimension, small_description, item_id),
+                    (
+                        description,
+                        description_excel,
+                        description_vietnames_from_excel,
+                        pdf_path,
+                        page,
+                        category,
+                        author,
+                        dimension,
+                        small_description,
+                        item_id,
+                    ),
                 )
                 conn.execute("DELETE FROM item_images WHERE item_id=?", (item_id,))
             else:
                 if description_excel is None:
                     description_excel = ""
+                if description_vietnames_from_excel is None:
+                    description_vietnames_from_excel = ""
                 if pdf_path is None:
                     pdf_path = ""
                 cur = conn.execute(
                     """
-                    INSERT INTO items(code, description, description_excel, pdf_path, page, category, author, dimension, small_description)
-                    VALUES(?,?,?,?,?,?,?,?,?)
+                    INSERT INTO items(code, description, description_excel, description_vietnames_from_excel, pdf_path, page, category, author, dimension, small_description)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)
                     """,
-                    (code, description, description_excel, pdf_path, page, category, author, dimension, small_description),
+                    (
+                        code,
+                        description,
+                        description_excel,
+                        description_vietnames_from_excel,
+                        pdf_path,
+                        page,
+                        category,
+                        author,
+                        dimension,
+                        small_description,
+                    ),
                 )
                 item_id = int(cur.lastrowid)
 
