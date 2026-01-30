@@ -232,13 +232,13 @@ class MainWindow(
         ttk.Entry(editor, textvariable=self.var_dimension).grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
-        ttk.Label(editor, text="Small description").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(editor, text="Description from PDF").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Entry(editor, textvariable=self.var_small_description).grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
-        ttk.Label(editor, text="Description (combined)").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
-        self.description_text = scrolledtext.ScrolledText(editor, wrap="word", height=4)
-        self.description_text.grid(row=r, column=1, sticky="ew", pady=3)
+        ttk.Label(editor, text="Description from excel").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        self.description_excel_text = scrolledtext.ScrolledText(editor, wrap="word", height=4)
+        self.description_excel_text.grid(row=r, column=1, sticky="ew", pady=3)
 
     def on_open_pdf_cropper(self) -> None:
         if not self.state.catalog_pdf_path:
@@ -398,23 +398,55 @@ class MainWindow(
 
     def on_choose_pdf_and_build_db(self) -> None:
         """
-        Choose a PDF (if not already selected) then build/update DB immediately.
-        Also supports rebuilding using the currently selected PDF (no dialog).
+        Show existing catalog PDFs, ask whether to load a new one, then build/update DB.
         """
-        # If no PDF selected yet, ask user to choose one
-        if not self.state.catalog_pdf_path:
+        # show existing catalog PDFs
+        pdf_dir = self.state.data_dir / "catalog_pdfs"
+        existing = []
+        try:
+            if pdf_dir.exists():
+                existing = sorted([p.name for p in pdf_dir.glob("*.pdf")])
+            if existing:
+                messagebox.showinfo(
+                    "Existing catalog PDFs",
+                    "Already in database:\n" + "\n".join(existing),
+                )
+        except Exception:
+            pass
+
+        use_new = messagebox.askyesno(
+            "Load new PDF?",
+            "Do you want to load a new PDF file?",
+        )
+
+        if use_new or not self.state.catalog_pdf_path:
             path = filedialog.askopenfilename(
                 title="Choose catalog PDF",
+                initialdir=str(pdf_dir) if pdf_dir.exists() else None,
                 filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
             )
             if not path:
                 return
-
             self.state.set_catalog_pdf(path)
             _safe_ui(self.root, self._update_pdf_tools_label)
             self._set_status(f"PDF selected: {path}")
             self._set_preview_text(
                 f"PDF selected:\n{path}\n\nBuilding / updating DB now..."
+            )
+        else:
+            path = str(self.state.catalog_pdf_path)
+            if not path:
+                return
+            run_again = messagebox.askyesno(
+                "Update DB again?",
+                "Use the current PDF and run the update again?",
+            )
+            if not run_again:
+                self._set_status("Canceled PDF update.")
+                return
+            self._set_status(f"Using current PDF: {path}")
+            self._set_preview_text(
+                f"Using current PDF:\n{path}\n\nBuilding / updating DB now..."
             )
 
         # From here: we have a PDF path
@@ -427,7 +459,7 @@ class MainWindow(
 
     def on_build_excel_db(self) -> None:
         """
-        Load an Excel file and update items.description by matching item code.
+        Load an Excel file and update items.description_excel by matching item code.
         Matching strategy:
         1) exact code match
         2) normalized match (spaces removed, weird dashes fixed) -> only if uniquely maps to a DB code
@@ -461,6 +493,7 @@ class MainWindow(
             total = len(mapping)
             updated = 0
             missing = 0
+            missing_codes: list[str] = []
             i = 0
 
             # 3) update DB
@@ -481,8 +514,12 @@ class MainWindow(
                         updated += 1
                     else:
                         missing += 1
+                        if len(missing_codes) < 30:
+                            missing_codes.append(excel_code_str)
                 else:
                     missing += 1
+                    if len(missing_codes) < 30:
+                        missing_codes.append(excel_code_str)
 
                 # progress update (every 25 rows)
                 if i % 25 == 0:
@@ -499,6 +536,15 @@ class MainWindow(
                     f"Rows read: {total}\nUpdated: {updated}\nMissing codes: {missing}",
                 ),
             )
+            if missing_codes:
+                _safe_ui(
+                    self.root,
+                    lambda: messagebox.showwarning(
+                        "Missing codes (sample)",
+                        "Some Excel codes did not match DB.\n\n"
+                        f"Sample (up to 30):\n" + "\n".join(missing_codes),
+                    ),
+                )
 
         self._run_bg("⏳ Updating item descriptions from Excel...", work)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from smartcatalog.state import CatalogItem
 
 
@@ -39,7 +40,7 @@ class ItemsControllerMixin:
                 f"{it.id} {it.code} {it.page or ''} "
                 f"{getattr(it,'category','')} {getattr(it,'author','')} "
                 f"{getattr(it,'dimension','')} {getattr(it,'small_description','')} "
-                f"{it.description}"
+                f"{it.description} {getattr(it,'description_excel','')}"
             ).lower()
 
             if q and q not in text:
@@ -130,6 +131,13 @@ class ItemsControllerMixin:
             return
 
         self._selected = it
+        # use the item's pdf_path if available (so Page Images/Crop use correct catalog)
+        try:
+            pdf_path = getattr(it, "pdf_path", "") or ""
+            if pdf_path:
+                self.state.catalog_pdf_path = Path(pdf_path)
+        except Exception:
+            pass
 
         self._update_pdf_tools_label()
         self._reload_selected_into_form()

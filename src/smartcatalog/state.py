@@ -13,6 +13,8 @@ class CatalogItem:
     id: int
     code: str
     description: str
+    description_excel: str
+    pdf_path: str
     page: Optional[int]
     images: List[str]
 

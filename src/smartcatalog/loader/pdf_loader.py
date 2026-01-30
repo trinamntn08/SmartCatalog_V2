@@ -217,6 +217,7 @@ def build_or_update_db_from_pdf(
                     dimension=it.dimension,
                     small_description=it.small_description,
                     description=desc,
+                    pdf_path=str(pdf_path),
                     image_paths=[],
                     conn=conn,
                 )

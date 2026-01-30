@@ -15,7 +15,7 @@ class ItemFormControllerMixin:
     Assumes MainWindow provides:
       - self._selected, self.state (db, selected_item_id, items_cache)
       - form vars: var_code, var_page, var_category, var_author, var_dimension, var_small_description
-      - self.description_text (ScrolledText)
+      - self.description_excel_text (ScrolledText)
       - self._set_preview_text(), self._set_status()
       - self.items_tree (Treeview)
       - thumbnail methods: _render_thumbnails(), _clear_thumbnails()
@@ -38,9 +38,9 @@ class ItemFormControllerMixin:
         self.var_dimension.set(getattr(it, "dimension", "") or "")
         self.var_small_description.set(getattr(it, "small_description", "") or "")
 
-        # Combined description
-        self.description_text.delete("1.0", "end")
-        self.description_text.insert("1.0", it.description or "")
+        # Description from Excel
+        self.description_excel_text.delete("1.0", "end")
+        self.description_excel_text.insert("1.0", it.description_excel or "")
 
         # Thumbnails (linked images for item)
         self._render_thumbnails(it.images or [])
@@ -67,7 +67,7 @@ class ItemFormControllerMixin:
             f"AUTHOR: {getattr(it, 'author', '')}\n"
             f"DIMENSION: {getattr(it, 'dimension', '')}\n"
             f"SMALL DESCRIPTION: {getattr(it, 'small_description', '')}\n\n"
-            f"DESCRIPTION (combined):\n{it.description}\n\n"
+            f"DESCRIPTION FROM EXCEL:\n{it.description_excel}\n\n"
             f"IMAGES ({len(it.images or [])}):\n{img_lines}"
         )
 
@@ -84,6 +84,8 @@ class ItemFormControllerMixin:
             dimension=getattr(it, "dimension", "") or "",
             small_description=getattr(it, "small_description", "") or "",
             description=it.description or "",
+            description_excel=it.description_excel or "",
+            pdf_path=getattr(it, "pdf_path", "") or "",
             image_paths=it.images or [],
         )
 
@@ -116,15 +118,9 @@ class ItemFormControllerMixin:
         it.dimension = (self.var_dimension.get() or "").strip()
         it.small_description = (self.var_small_description.get() or "").strip()
 
-        # Description
-        desc = (self.description_text.get("1.0", "end-1c") or "").strip()
-        if not desc:
-            parts = [it.category, it.author, it.dimension, it.small_description]
-            desc = " | ".join([p for p in parts if p])
-            self.description_text.delete("1.0", "end")
-            self.description_text.insert("1.0", desc)
-
-        it.description = desc
+        # Description from Excel
+        desc_excel = (self.description_excel_text.get("1.0", "end-1c") or "").strip()
+        it.description_excel = desc_excel
 
         # Persist to DB
         if getattr(self.state, "db", None):
@@ -136,6 +132,8 @@ class ItemFormControllerMixin:
                 dimension=it.dimension,
                 small_description=it.small_description,
                 description=it.description,
+                description_excel=it.description_excel,
+                pdf_path=getattr(it, "pdf_path", "") or "",
                 image_paths=it.images or [],
             )
             self.refresh_items()

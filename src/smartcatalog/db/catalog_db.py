@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   code TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  description_excel TEXT NOT NULL DEFAULT '',
+  pdf_path TEXT NOT NULL DEFAULT '',
   page INTEGER,
 
   category TEXT NOT NULL DEFAULT '',
@@ -122,6 +124,8 @@ class CatalogDB:
             "author": "TEXT NOT NULL DEFAULT ''",
             "dimension": "TEXT NOT NULL DEFAULT ''",
             "small_description": "TEXT NOT NULL DEFAULT ''",
+            "description_excel": "TEXT NOT NULL DEFAULT ''",
+            "pdf_path": "TEXT NOT NULL DEFAULT ''",
         }
         cur = conn.cursor()
         for col, ddl in cols.items():
@@ -166,7 +170,7 @@ class CatalogDB:
 
             # select only columns that exist (safe across migrations)
             select_cols = ["id", "code", "description", "page"]
-            for opt in ["category", "author", "dimension", "small_description", "images"]:
+            for opt in ["category", "author", "dimension", "small_description", "images", "description_excel", "pdf_path"]:
                 if opt in cols:
                     select_cols.append(opt)
 
@@ -252,6 +256,8 @@ class CatalogDB:
                         id=item_id,
                         code=str(get("code", "") or ""),
                         description=str(get("description", "") or ""),
+                        description_excel=str(get("description_excel", "") or ""),
+                        pdf_path=str(get("pdf_path", "") or ""),
                         page=(int(get("page")) if get("page") not in (None, "") else None),
                         images=images,
                         category=str(get("category", "") or ""),
@@ -299,7 +305,7 @@ class CatalogDB:
             r = conn.execute(
                 """
                 SELECT id, code, description, page,
-                       category, author, dimension, small_description
+                       description_excel, pdf_path, category, author, dimension, small_description
                 FROM items
                 WHERE code=?
                 """,
@@ -317,6 +323,8 @@ class CatalogDB:
                 id=item_id,
                 code=str(r["code"]),
                 description=str(r["description"] or ""),
+                description_excel=str(r["description_excel"] or ""),
+                pdf_path=str(r["pdf_path"] or ""),
                 page=(int(r["page"]) if r["page"] is not None else None),
                 category=str(r["category"] or ""),
                 author=str(r["author"] or ""),
@@ -583,6 +591,8 @@ class CatalogDB:
         dimension: str = "",
         small_description: str = "",
         description: str = "",
+        description_excel: Optional[str] = None,
+        pdf_path: Optional[str] = None,
         image_paths: List[str] | None = None,
         conn: Optional[sqlite3.Connection] = None,
     ) -> int:
@@ -604,14 +614,23 @@ class CatalogDB:
             self._ensure_columns(conn)
 
         try:
-            row = conn.execute("SELECT id FROM items WHERE code=?", (code,)).fetchone()
+            row = conn.execute(
+                "SELECT id, description_excel, pdf_path FROM items WHERE code=?",
+                (code,),
+            ).fetchone()
 
             if row:
                 item_id = int(row["id"])
+                if description_excel is None:
+                    description_excel = str(row["description_excel"] or "")
+                if pdf_path is None:
+                    pdf_path = str(row["pdf_path"] or "")
                 conn.execute(
                     """
                     UPDATE items
                     SET description=?,
+                        description_excel=?,
+                        pdf_path=?,
                         page=?,
                         category=?,
                         author=?,
@@ -619,16 +638,20 @@ class CatalogDB:
                         small_description=?
                     WHERE id=?
                     """,
-                    (description, page, category, author, dimension, small_description, item_id),
+                    (description, description_excel, pdf_path, page, category, author, dimension, small_description, item_id),
                 )
                 conn.execute("DELETE FROM item_images WHERE item_id=?", (item_id,))
             else:
+                if description_excel is None:
+                    description_excel = ""
+                if pdf_path is None:
+                    pdf_path = ""
                 cur = conn.execute(
                     """
-                    INSERT INTO items(code, description, page, category, author, dimension, small_description)
-                    VALUES(?,?,?,?,?,?,?)
+                    INSERT INTO items(code, description, description_excel, pdf_path, page, category, author, dimension, small_description)
+                    VALUES(?,?,?,?,?,?,?,?,?)
                     """,
-                    (code, description, page, category, author, dimension, small_description),
+                    (code, description, description_excel, pdf_path, page, category, author, dimension, small_description),
                 )
                 item_id = int(cur.lastrowid)
 
@@ -700,7 +723,7 @@ class CatalogDB:
         conn: Optional[sqlite3.Connection] = None,
     ) -> bool:
         """
-        Update items.description for a given code.
+        Update items.description_excel for a given code.
         Returns True if something was updated, False if code not found.
         """
         code = (code or "").strip()
@@ -716,7 +739,7 @@ class CatalogDB:
 
         try:
             cur = conn.execute(
-                "UPDATE items SET description=? WHERE code=?",
+                "UPDATE items SET description_excel=? WHERE code=?",
                 (description, code),
             )
             conn.commit()

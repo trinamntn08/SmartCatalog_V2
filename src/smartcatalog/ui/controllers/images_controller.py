@@ -142,6 +142,8 @@ class ImagesControllerMixin:
                 dimension=getattr(self._selected, "dimension", "") or "",
                 small_description=getattr(self._selected, "small_description", "") or "",
                 description=self._selected.description or "",
+                description_excel=getattr(self._selected, "description_excel", "") or "",
+                pdf_path=getattr(self._selected, "pdf_path", "") or "",
                 image_paths=self._selected.images,
             )
 
