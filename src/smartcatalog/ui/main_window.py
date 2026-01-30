@@ -21,6 +21,7 @@ from smartcatalog.loader.excel_loader import load_code_to_description_from_excel
 from smartcatalog.ui.pdf_crop_window import PdfCropWindow
 
 import re
+from bisect import bisect_right
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.drawing.image import Image as XLImage
@@ -40,6 +41,43 @@ def _normalize_header_text(s: str) -> str:
     s = s.replace("\n", " ")
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
+
+def _sanitize_filename(s: str) -> str:
+    s = re.sub(r"[^A-Za-z0-9_-]+", "_", str(s or "").strip())
+    s = s.strip("_")
+    return s or "item"
+
+
+def _get_image_anchor_row(img) -> Optional[int]:
+    try:
+        anchor = getattr(img, "anchor", None)
+        if anchor is None:
+            return None
+        if hasattr(anchor, "_from") and getattr(anchor._from, "row", None) is not None:
+            return int(anchor._from.row) + 1
+        if getattr(anchor, "row", None) is not None:
+            return int(anchor.row) + 1
+    except Exception:
+        return None
+    return None
+
+
+def _image_to_pil(img) -> Optional[Image.Image]:
+    try:
+        data = img._data()
+        return Image.open(io.BytesIO(data))
+    except Exception:
+        pass
+    try:
+        ref = getattr(img, "ref", None)
+        if ref:
+            p = Path(ref)
+            if p.exists():
+                return Image.open(p)
+    except Exception:
+        return None
+    return None
 
 def _build_db_code_index(db_codes: list[str]) -> dict[str, str]:
     """
@@ -459,7 +497,7 @@ class MainWindow(
 
     def on_build_excel_db(self) -> None:
         """
-        Load an Excel file and update items.description_excel by matching item code.
+        Load an Excel file and update items.description_excel and images by matching item code.
         Matching strategy:
         1) exact code match
         2) normalized match (spaces removed, weird dashes fixed) -> only if uniquely maps to a DB code
@@ -476,8 +514,20 @@ class MainWindow(
             return
 
         def work():
-            # 1) read excel -> {excel_code: description}
-            mapping = load_code_to_description_from_excel(xlsx_path)
+            # 1) read excel (all sheets) -> {excel_code: description}
+            mapping: dict[str, str] = {}
+            wb = load_workbook(xlsx_path)
+            sheet_names = list(wb.sheetnames)
+            for sn in sheet_names:
+                try:
+                    m = load_code_to_description_from_excel(xlsx_path, sheet_name=sn)
+                except Exception:
+                    continue
+                for k, v in m.items():
+                    key = str(k).strip()
+                    if key in mapping:
+                        continue
+                    mapping[key] = str(v).strip()
 
             # 2) read all DB codes once (exact + normalized index)
             conn = self.state.db.connect()
@@ -490,50 +540,190 @@ class MainWindow(
             db_code_set = set(db_codes)
             db_index = _build_db_code_index(db_codes)  # normalized -> original db code (unique only)
 
+            # 3) build image map from Excel (embedded images)
+            image_map: dict[str, list[str]] = {}
+            image_rows_total = 0
+            try:
+                for sn in sheet_names:
+                    ws = wb[sn]
+                    try:
+                        _df, header_row, code_col = detect_excel_code_column(xlsx_path, sheet_name=sn)
+                    except Exception:
+                        continue
+                    header_row_1 = header_row + 1  # openpyxl is 1-based
+
+                    # find code column index in header row
+                    code_col_idx = None
+                    for cell in ws[header_row_1]:
+                        if _normalize_header_text(str(cell.value or "")) == _normalize_header_text(code_col):
+                            code_col_idx = cell.column
+                            break
+                    if code_col_idx is None:
+                        continue
+
+                    # map row -> excel code
+                    code_rows: list[int] = []
+                    row_to_code: dict[int, str] = {}
+                    for r in range(header_row_1 + 1, ws.max_row + 1):
+                        raw_code = ws.cell(row=r, column=code_col_idx).value
+                        excel_code_str = str(raw_code or "").strip()
+                        if not excel_code_str:
+                            continue
+                        code_rows.append(r)
+                        row_to_code[r] = excel_code_str
+                    code_rows.sort()
+
+                    # extract images and map to nearest code row above
+                    if code_rows and getattr(ws, "_images", None):
+                        out_dir = Path(self.state.assets_dir) / "excel_import"
+                        out_dir.mkdir(parents=True, exist_ok=True)
+
+                        per_code_counts: dict[str, int] = {}
+                        safe_sheet = _sanitize_filename(sn)
+                        for img in ws._images:
+                            anchor_row = _get_image_anchor_row(img)
+                            if anchor_row is None:
+                                continue
+                            image_rows_total += 1
+
+                            idx = bisect_right(code_rows, anchor_row) - 1
+                            if idx < 0:
+                                continue
+                            code_row = code_rows[idx]
+                            excel_code = row_to_code.get(code_row, "")
+                            if not excel_code:
+                                continue
+
+                            pil = _image_to_pil(img)
+                            if pil is None:
+                                continue
+
+                            count = per_code_counts.get(excel_code, 0) + 1
+                            per_code_counts[excel_code] = count
+
+                            safe_code = _sanitize_filename(excel_code)
+                            out_path = out_dir / f"{safe_sheet}_{safe_code}_{count:02d}.png"
+                            try:
+                                pil.convert("RGBA").save(out_path, format="PNG")
+                            except Exception:
+                                continue
+
+                            image_map.setdefault(excel_code, []).append(str(out_path))
+            except Exception:
+                image_map = {}
+
             total = len(mapping)
             updated = 0
             missing = 0
             missing_codes: list[str] = []
+            images_updated = 0
+            images_missing = 0
             i = 0
 
-            # 3) update DB
-            for excel_code, desc in mapping.items():
-                i += 1
-                excel_code_str = str(excel_code).strip()
+            # 4) update DB (description + images) using one connection
+            conn = self.state.db.connect()
+            try:
+                for excel_code, desc in mapping.items():
+                    i += 1
+                    excel_code_str = str(excel_code).strip()
 
-                # exact match first
-                if excel_code_str in db_code_set:
-                    code_to_update = excel_code_str
-                else:
-                    # normalized match (only if unique)
-                    code_to_update = db_index.get(_normalize_code_soft(excel_code_str), "")
+                    # exact match first
+                    if excel_code_str in db_code_set:
+                        code_to_update = excel_code_str
+                    else:
+                        # normalized match (only if unique)
+                        code_to_update = db_index.get(_normalize_code_soft(excel_code_str), "")
 
-                if code_to_update:
-                    ok = self.state.db.update_description_by_code(code=code_to_update, description=str(desc))
-                    if ok:
-                        updated += 1
+                    if code_to_update:
+                        cur = conn.execute(
+                            "UPDATE items SET description_excel=? WHERE code=?",
+                            (str(desc).strip(), code_to_update),
+                        )
+                        if cur.rowcount > 0:
+                            updated += 1
+                        else:
+                            missing += 1
+                            if len(missing_codes) < 30:
+                                missing_codes.append(excel_code_str)
                     else:
                         missing += 1
                         if len(missing_codes) < 30:
                             missing_codes.append(excel_code_str)
-                else:
-                    missing += 1
-                    if len(missing_codes) < 30:
-                        missing_codes.append(excel_code_str)
 
-                # progress update (every 25 rows)
-                if i % 25 == 0:
-                    _safe_ui(self.root, lambda i=i, total=total, updated=updated, missing=missing:
-                            self._set_status(f"⏳ Excel update {i}/{total} | updated={updated} | missing={missing}"))
+                    # progress update (every 25 rows)
+                    if i % 25 == 0:
+                        _safe_ui(self.root, lambda i=i, total=total, updated=updated, missing=missing:
+                                self._set_status(f"⏳ Excel update {i}/{total} | updated={updated} | missing={missing}"))
 
-            # 4) refresh UI and show summary
+                # images: link excel images into assets + item_asset_links (preferred)
+                excel_asset_pdf_path = f"excel:{xlsx_path}"
+                for excel_code, img_paths in image_map.items():
+                    excel_code_str = str(excel_code).strip()
+                    if excel_code_str in db_code_set:
+                        code_to_update = excel_code_str
+                    else:
+                        code_to_update = db_index.get(_normalize_code_soft(excel_code_str), "")
+
+                    if not code_to_update:
+                        images_missing += 1
+                        continue
+
+                    row = conn.execute("SELECT id FROM items WHERE code=?", (code_to_update,)).fetchone()
+                    if row is None:
+                        images_missing += 1
+                        continue
+
+                    item_id = int(row["id"])
+                    # replace existing asset links so Excel images show in UI
+                    conn.execute("DELETE FROM item_asset_links WHERE item_id=?", (item_id,))
+                    for idx, p in enumerate(img_paths):
+                        asset_row = conn.execute(
+                            "SELECT id FROM assets WHERE pdf_path=? AND page=? AND asset_path=?",
+                            (excel_asset_pdf_path, 0, p),
+                        ).fetchone()
+                        if asset_row:
+                            asset_id = int(asset_row["id"])
+                        else:
+                            cur = conn.execute(
+                                """
+                                INSERT INTO assets(pdf_path, page, asset_path, x0, y0, x1, y1, source, sha256)
+                                VALUES(?,?,?,?,?,?,?,?,?)
+                                """,
+                                (excel_asset_pdf_path, 0, p, None, None, None, None, "excel", ""),
+                            )
+                            asset_id = int(cur.lastrowid)
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO item_asset_links(item_id, asset_id, match_method, score, verified, is_primary)
+                            VALUES(?,?,?,?,?,?)
+                            """,
+                            (item_id, asset_id, "excel", None, 1, 1 if idx == 0 else 0),
+                        )
+                    images_updated += 1
+
+                conn.commit()
+            finally:
+                conn.close()
+
+            # 5) refresh UI and show summary
             _safe_ui(self.root, self.refresh_items)
-            _safe_ui(self.root, lambda: self._set_status(f"✅ Excel import done | updated={updated} | missing={missing}"))
+            _safe_ui(self.root, lambda: self._set_status(
+                f"✅ Excel import done | updated={updated} | missing={missing} | images={images_updated}"
+            ))
             _safe_ui(
                 self.root,
                 lambda: messagebox.showinfo(
                     "Excel import done",
-                    f"Rows read: {total}\nUpdated: {updated}\nMissing codes: {missing}",
+                    "Rows read: {total}\nUpdated: {updated}\nMissing codes: {missing}\n"
+                    "Images mapped: {images_updated}\nImages missing: {images_missing}\n"
+                    "Images found in file: {image_rows_total}".format(
+                        total=total,
+                        updated=updated,
+                        missing=missing,
+                        images_updated=images_updated,
+                        images_missing=images_missing,
+                        image_rows_total=image_rows_total,
+                    ),
                 ),
             )
             if missing_codes:
@@ -546,7 +736,7 @@ class MainWindow(
                     ),
                 )
 
-        self._run_bg("⏳ Updating item descriptions from Excel...", work)
+        self._run_bg("⏳ Updating item descriptions and images from Excel...", work)
 
     def on_search_images_from_excel(self) -> None:
         """
