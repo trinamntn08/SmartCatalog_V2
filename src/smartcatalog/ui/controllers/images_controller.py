@@ -126,7 +126,7 @@ class ImagesControllerMixin:
         else:
             btn = ttk.Button(
                 cell,
-                text="[Preview failed]",
+                text="[Không xem được]",
                 width=14,
                 command=lambda p=image_path: self._on_select_thumbnail(p),
             )
@@ -198,12 +198,12 @@ class ImagesControllerMixin:
                         pass
 
             if not self._selected:
-                messagebox.showwarning("No item", "Please add or select an item first.")
+                messagebox.showwarning("Chưa chọn", "Vui lòng thêm hoặc chọn sản phẩm trước.")
                 return
 
         path = filedialog.askopenfilename(
-            title="Choose image",
-            filetypes=[("Image files", "*.png *.jpg *.jpeg *.webp *.bmp"), ("All files", "*.*")],
+            title="Chọn ảnh",
+            filetypes=[("Tệp ảnh", "*.png *.jpg *.jpeg *.webp *.bmp"), ("Tất cả tệp", "*.*")],
         )
         if not path:
             return
@@ -229,7 +229,7 @@ class ImagesControllerMixin:
 
         self.refresh_items()
         self._reload_selected_into_form()
-        self._set_status("✅ Added image")
+        self._set_status("✅ Đã thêm ảnh")
 
     def on_remove_selected_thumbnail(self) -> None:
         """
@@ -239,28 +239,28 @@ class ImagesControllerMixin:
         Also remove from in-memory selected.images and refresh UI.
         """
         if not self._selected:
-            messagebox.showwarning("No item", "Please select an item first.")
+            messagebox.showwarning("Chưa chọn", "Vui lòng chọn sản phẩm trước.")
             return
 
         img_path = (self._selected_image_path or "").strip()
         if not img_path:
-            messagebox.showwarning("No image", "Click a thumbnail first (select an image to remove).")
+            messagebox.showwarning("Chưa chọn ảnh", "Vui lòng chọn ảnh thu nhỏ trước (để xóa).")
             return
 
         if not self.state.db:
-            messagebox.showwarning("DB", "Database not initialized.")
+            messagebox.showwarning("CSDL", "CSDL chưa được khởi tạo.")
             return
 
         item_id = int(getattr(self._selected, "id", 0) or 0)
         if not item_id:
-            messagebox.showwarning("No item", "Invalid selected item.")
+            messagebox.showwarning("Chưa chọn", "Sản phẩm đã chọn không hợp lệ.")
             return
 
         # 1) Unlink in DB (assets links first, fallback legacy)
         removed = self._db_remove_image_from_item(item_id=item_id, img_path=img_path)
 
         if not removed:
-            messagebox.showinfo("Not found", "That image link was not found in DB (already removed?).")
+            messagebox.showinfo("Không tìm thấy", "Liên kết ảnh không còn trong CSDL (có thể đã bị xóa).")
 
         # 2) Update in-memory list
         self._selected.images = [p for p in (self._selected.images or []) if p != img_path]
@@ -274,19 +274,18 @@ class ImagesControllerMixin:
         except Exception:
             pass
         self._reload_selected_into_form()
-        self._set_status("✅ Removed selected image")
-
+        self._set_status("✅ Đã xóa ảnh đã chọn")
     def on_rotate_selected_image(self, degrees: int) -> None:
         """
         Rotate selected image on disk and refresh UI.
         """
         if not self._selected:
-            messagebox.showwarning("No item", "Please select an item first.")
+            messagebox.showwarning("Chưa chọn", "Vui lòng chọn sản phẩm trước.")
             return
 
         img_path = (self._selected_image_path or "").strip()
         if not img_path:
-            messagebox.showwarning("No image", "Click a thumbnail first (select an image to rotate).")
+            messagebox.showwarning("Chưa chọn ảnh", "Vui lòng chọn ảnh thu nhỏ trước (để xoay).")
             return
 
         try:
@@ -295,7 +294,7 @@ class ImagesControllerMixin:
             rotated = pil.rotate(degrees, expand=True)
             rotated.save(img_path)
         except Exception as e:
-            messagebox.showerror("Rotate failed", f"Could not rotate image:\n{e}")
+            messagebox.showerror("Xoay ảnh thất bại", f"Không thể xoay ảnh:\n{e}")
             return
 
         # Refresh thumbnails + preview without losing selection
@@ -310,7 +309,7 @@ class ImagesControllerMixin:
         # reselect the rotated image
         self._selected_image_path = img_path
         self._on_select_thumbnail(img_path)
-        self._set_status("✅ Rotated image")
+        self._set_status("✅ Đã xoay ảnh")
 
     def _db_remove_image_from_item(self, *, item_id: int, img_path: str) -> bool:
         """

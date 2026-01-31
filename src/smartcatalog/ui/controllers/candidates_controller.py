@@ -26,31 +26,31 @@ class PageImage:
 
 class CandidatesControllerMixin:
     """
-    Page Images (fast + simple):
+    Ảnh trang (fast + simple):
     - Selecting an item/page triggers async extraction of images from that PDF page
     - Cached per (pdf_path, page_index)
     - UI never blocks
     - Display as FLOW layout: horizontal first then wrap
-    - Click an image to select, then click Add to save into assets + link to selected item
+    - Click an image to select, then click Thêm to save into assets + link to selected item
     """
 
     # ----------------------------
     # UI build (called by main_window)
     # ----------------------------
     def _build_candidates_section_simple(self, parent: tk.Misc) -> None:
-        wrapper = ttk.Labelframe(parent, text="Page Images", padding=8)
+        wrapper = ttk.Labelframe(parent, text="Ảnh trang", padding=8)
         wrapper.pack(fill="both", expand=True, pady=(8, 0))
 
         topbar = ttk.Frame(wrapper)
         topbar.pack(fill="x", pady=(0, 6))
 
-        self._cand_selected_label = ttk.Label(topbar, text="Selected: (none)")
+        self._cand_selected_label = ttk.Label(topbar, text="Đã chọn: (chưa có)")
         self._cand_selected_label.pack(side="left")
 
         btn_col = ttk.Frame(topbar)
         btn_col.pack(side="right")
 
-        ttk.Button(btn_col, text="Add", command=self._on_add_selected_page_image).pack(fill="x")
+        ttk.Button(btn_col, text="Thêm", command=self._on_add_selected_page_image).pack(fill="x")
         if hasattr(self, "on_open_pdf_cropper"):
             ttk.Button(
                 btn_col,
@@ -110,7 +110,7 @@ class CandidatesControllerMixin:
         self._cand_inner.bind("<Configure>", _on_inner_configure)
         self._cand_canvas.bind("<Configure>", _on_canvas_configure)
 
-        ttk.Label(self._cand_inner, text="Select an item/page to load images.").pack(anchor="w", pady=4)
+        ttk.Label(self._cand_inner, text="Chọn sản phẩm/trang để tải ảnh.").pack(anchor="w", pady=4)
 
     # ----------------------------
     # public entry point: call when page changes
@@ -121,13 +121,13 @@ class CandidatesControllerMixin:
         self._cand_current_key = key
 
         self._cand_clear()
-        ttk.Label(self._cand_inner, text=f"Loading images for page {page_index + 1}…").pack(anchor="w", pady=4)
+        ttk.Label(self._cand_inner, text=f"Đang tải ảnh cho trang {page_index + 1}…").pack(anchor="w", pady=4)
 
         if not pdf_path:
             self._cand_clear()
             ttk.Label(
                 self._cand_inner,
-                text="No catalog PDF path set yet.\nBuild/select a PDF first (button on top).",
+                text="Chưa đặt đường dẫn PDF.\nBuild/select a PDF first (button on top).",
             ).pack(anchor="w", pady=4)
             return
 
@@ -178,7 +178,7 @@ class CandidatesControllerMixin:
 
         _pdf_path, page_index = key
         self._cand_clear()
-        ttk.Label(self._cand_inner, text=f"Failed to extract images from page {page_index + 1}: {err}").pack(anchor="w", pady=4)
+        ttk.Label(self._cand_inner, text=f"Không thể trích ảnh từ trang {page_index + 1}: {err}").pack(anchor="w", pady=4)
 
     def _cand_clear(self) -> None:
         for w in self._cand_inner.winfo_children():
@@ -241,7 +241,7 @@ class CandidatesControllerMixin:
         self._cand_last_images = images
 
         if not images:
-            ttk.Label(self._cand_inner, text="(no images on this page)").pack(anchor="w", pady=4)
+            ttk.Label(self._cand_inner, text="(không có ảnh ở trang này)").pack(anchor="w", pady=4)
             return
 
         # render using current canvas width
@@ -323,7 +323,7 @@ class CandidatesControllerMixin:
     def _on_select_page_image(self, img: PageImage) -> None:
         self._cand_selected_key = (img.page_index, img.xref)
         if hasattr(self, "_cand_selected_label"):
-            self._cand_selected_label.configure(text=f"Selected: page {img.page_index + 1} xref {img.xref}")
+            self._cand_selected_label.configure(text=f"Đã chọn: trang {img.page_index + 1} xref {img.xref}")
         # reflow to show selection highlight
         width = int(self._cand_canvas.winfo_width() or 600)
         self._cand_reflow(width)
@@ -418,16 +418,16 @@ class CandidatesControllerMixin:
 
     def _on_add_selected_page_image(self) -> None:
         if not self._cand_selected_key:
-            messagebox.showwarning("No image", "Please click an image first.")
+            messagebox.showwarning("Chưa chọn ảnh", "Vui lòng bấm chọn một ảnh trước.")
             return
         for img in self._cand_last_images or []:
             if (img.page_index, img.xref) == self._cand_selected_key:
                 self._on_add_page_image_to_db(img)
                 return
-        messagebox.showwarning("No image", "Selected image is no longer available.")
+        messagebox.showwarning("Chưa chọn ảnh", "Ảnh đã chọn không còn tồn tại.")
 
     # ----------------------------
-    # Add to DB (SAVE asset + INSERT asset row + LINK to selected item)
+    # Thêm to CSDL (SAVE asset + INSERT asset row + LINK to selected item)
     # ----------------------------
     def _on_add_page_image_to_db(self, img: PageImage) -> None:
         """
@@ -435,19 +435,19 @@ class CandidatesControllerMixin:
         """
         try:
             if not getattr(self, "state", None) or not self.state.db:
-                messagebox.showwarning("DB", "Database not initialized.")
+                messagebox.showwarning("CSDL", "CSDL chưa được khởi tạo.")
                 return
 
             sel = getattr(self, "_selected", None)
             item_id = getattr(sel, "id", None)
 
             if not item_id:
-                messagebox.showwarning("No item", "Please select an item first.")
+                messagebox.showwarning("Chưa chọn", "Vui lòng chọn sản phẩm trước.")
                 return
 
             pdf_path = str(getattr(self.state, "catalog_pdf_path", "") or "")
             if not pdf_path:
-                messagebox.showwarning("PDF", "No catalog PDF path set yet.")
+                messagebox.showwarning("PDF", "Chưa đặt đường dẫn PDF.")
                 return
 
             assets_dir: Path = self.state.data_dir / "assets"
@@ -489,4 +489,4 @@ class CandidatesControllerMixin:
                 self._reload_selected_into_form()
 
         except Exception as e:
-            messagebox.showerror("Error", f"Add failed:\n{e}")
+            messagebox.showerror("Lỗi", f"Thêm thất bại:\n{e}")

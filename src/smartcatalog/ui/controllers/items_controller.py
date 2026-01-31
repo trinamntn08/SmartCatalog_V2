@@ -27,7 +27,7 @@ class ItemsControllerMixin:
         if self.state.db:
             self.state.items_cache = self.state.db.list_items()
         self._filter_items()
-        self._set_status(f"Loaded {len(self.state.items_cache)} items")
+        self._set_status(f"Đã tải {len(self.state.items_cache)} sản phẩm")
 
     def _filter_items(self) -> None:
         q = (self.search_var.get() or "").strip().lower()
@@ -98,14 +98,14 @@ class ItemsControllerMixin:
 
         labels = {
             "id": "ID",
-            "code": "Code",
-            "page": "Page",
-            "category": "Category",
-            "author": "Author",
-            "dimension": "Dimension",
-            "validated": "Validated",
-            "small_description": "Small desc",
-            "description": "Description",
+            "code": "Mã",
+            "page": "Trang",
+            "category": "Danh mục",
+            "author": "Tác giả",
+            "dimension": "Kích thước",
+            "validated": "Đã kiểm duyệt",
+            "small_description": "Mô tả ngắn",
+            "description": "Mô tả",
         }
 
         cols = list(self.items_tree["columns"])

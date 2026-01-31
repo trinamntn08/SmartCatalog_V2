@@ -118,12 +118,12 @@ class ItemFormControllerMixin:
     def on_save_item(self) -> None:
         it = getattr(self, "_selected", None)
         if not it:
-            messagebox.showwarning("No selection", "Please select an item on the left first.")
+            messagebox.showwarning("Chưa chọn", "Vui lòng chọn sản phẩm ở danh sách bên trái.")
             return
 
         code = (self.var_code.get() or "").strip()
         if not code:
-            messagebox.showerror("Invalid", "Code cannot be empty.")
+            messagebox.showerror("Không hợp lệ", "Mã không được để trống.")
             return
 
         page_str = (self.var_page.get() or "").strip()
@@ -132,7 +132,7 @@ class ItemFormControllerMixin:
             try:
                 page_val = int(page_str)
             except ValueError:
-                messagebox.showerror("Invalid", "Page must be an integer.")
+                messagebox.showerror("Không hợp lệ", "Trang phải là số nguyên.")
                 return
 
         # Update selected item in memory
@@ -169,21 +169,21 @@ class ItemFormControllerMixin:
             )
             self.refresh_items()
 
-        self._set_status(f"✅ Saved item {it.id} ({it.code})")
+        self._set_status(f"✅ Đã lưu sản phẩm {it.id} ({it.code})")
 
     def on_add_item(self) -> None:
         if not getattr(self.state, "db", None):
-            messagebox.showwarning("Missing DB", "Please build/load the DB first (from PDF).")
+            messagebox.showwarning("Thiếu CSDL", "Vui lòng tạo/tải CSDL trước (từ PDF).")
             return
 
         code = (self.var_code.get() or "").strip()
         if not code:
-            messagebox.showerror("Invalid", "Code cannot be empty.")
+            messagebox.showerror("Không hợp lệ", "Mã không được để trống.")
             return
 
         existing = self.state.db.get_item_by_code(code)
         if existing is not None:
-            messagebox.showerror("Exists", f"Code '{code}' already exists. Use 'Save item' to edit it.")
+            messagebox.showerror("Đã tồn tại", f"Mã '{code}' đã có. Vui lòng dùng 'Lưu' để chỉnh sửa.")
             return
 
         page_str = (self.var_page.get() or "").strip()
@@ -192,7 +192,7 @@ class ItemFormControllerMixin:
             try:
                 page_val = int(page_str)
             except ValueError:
-                messagebox.showerror("Invalid", "Page must be an integer.")
+                messagebox.showerror("Không hợp lệ", "Trang phải là số nguyên.")
                 return
 
         category = (self.var_category.get() or "").strip()
@@ -241,25 +241,25 @@ class ItemFormControllerMixin:
         except Exception:
             pass
 
-        self._set_status(f"✅ Added item {item_id} ({code})")
+        self._set_status(f"✅ Đã thêm sản phẩm {item_id} ({code})")
 
     def on_delete_item(self) -> None:
         it = getattr(self, "_selected", None)
         if not it:
-            messagebox.showwarning("No selection", "Please select an item on the left first.")
+            messagebox.showwarning("Chưa chọn", "Vui lòng chọn sản phẩm ở danh sách bên trái.")
             return
 
         if not getattr(self.state, "db", None):
-            messagebox.showwarning("Missing DB", "Please build/load the DB first (from PDF).")
+            messagebox.showwarning("Thiếu CSDL", "Vui lòng tạo/tải CSDL trước (từ PDF).")
             return
 
         item_id = int(getattr(it, "id", 0) or 0)
         if not item_id:
-            messagebox.showwarning("Invalid", "Selected item has no valid ID.")
+            messagebox.showwarning("Không hợp lệ", "Sản phẩm đã chọn không có ID hợp lệ.")
             return
 
         code = str(getattr(it, "code", "") or "").strip()
-        if not messagebox.askyesno("Delete item", f"Delete item {item_id} ({code})?"):
+        if not messagebox.askyesno("Xóa sản phẩm", f"Xóa sản phẩm {item_id} ({code})?"):
             return
 
         conn = self.state.db.connect()
@@ -292,4 +292,4 @@ class ItemFormControllerMixin:
 
         self.refresh_items()
         self._update_pdf_tools_label()
-        self._set_status(f"✅ Deleted item {item_id} ({code})")
+        self._set_status(f"✅ Đã xóa sản phẩm {item_id} ({code})")

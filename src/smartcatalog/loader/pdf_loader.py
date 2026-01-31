@@ -171,15 +171,15 @@ def build_or_update_db_from_pdf(
     - (disabled) Link assets to items via 'item_asset_links'
     """
     if not state.catalog_pdf_path:
-        raise RuntimeError("state.catalog_pdf_path is not set. Choose a PDF first.")
+        raise RuntimeError("Chưa đặt state.catalog_pdf_path. Vui lòng chọn PDF trước.")
     if state.db is None:
-        raise RuntimeError("state.db is not set. Create CatalogDB in main.py and inject into state.")
+        raise RuntimeError("Chưa có state.db. Vui lòng tạo CatalogDB trong main.py và gán vào state.")
 
     pdf_path = Path(state.catalog_pdf_path)
     if not pdf_path.exists():
-        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+        raise FileNotFoundError(f"Không tìm thấy PDF: {pdf_path}")
 
-    _set_status(status_message, f"Opening PDF: {pdf_path.name}")
+    _set_status(status_message, f"Đang mở PDF: {pdf_path.name}")
 
     conn = state.db.connect()
     doc = None
@@ -202,7 +202,7 @@ def build_or_update_db_from_pdf(
             items = extract_items_from_page(page)
             if not items:
                 if scanned % 50 == 0:
-                    _set_status(status_message, f"Scanning page {page_no}/{end_idx+1}...")
+                    _set_status(status_message, f"Đang quét trang {page_no}/{end_idx+1}...")
                 continue
 
             # upsert items first (legacy behavior)
@@ -225,7 +225,7 @@ def build_or_update_db_from_pdf(
                 inserted += 1
 
             if page_no % 10 == 0:
-                _set_status(status_message, f"Processed page {page_no}/{end_idx+1} | items upserted: {inserted}")
+                _set_status(status_message, f"Đã xử lý trang {page_no}/{end_idx+1} | sản phẩm đã cập nhật: {inserted}")
                 _set_preview_text(
                     source_preview,
                     f"Page {page_no}\n"
@@ -238,7 +238,7 @@ def build_or_update_db_from_pdf(
                     ])
                 )
 
-        _set_status(status_message, f"✅ Done. Pages scanned: {scanned}. Items upserted: {inserted}.")
+        _set_status(status_message, f"✅ Xong. Trang đã quét: {scanned}. Sản phẩm đã cập nhật: {inserted}.")
 
     finally:
         try:

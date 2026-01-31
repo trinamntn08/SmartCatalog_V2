@@ -36,7 +36,7 @@ class PdfCropWindow(tk.Toplevel):
         item_id: int,
         page_1based: int,
         on_after_save: Optional[Callable[[], None]] = None,
-        title: str = "PDF Crop Viewer",
+        title: str = "Trình xem cắt PDF",
     ) -> None:
         super().__init__(parent)
         self.state = state
@@ -72,7 +72,7 @@ class PdfCropWindow(tk.Toplevel):
         self._bind_shortcuts()
 
         if not self._ensure_doc_open():
-            messagebox.showerror("PDF missing", "No PDF selected or PDF cannot be opened.")
+            messagebox.showerror("Thiếu PDF", "Chưa chọn PDF hoặc không thể mở PDF.")
             self.destroy()
             return
 
@@ -95,20 +95,20 @@ class PdfCropWindow(tk.Toplevel):
 
         ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
 
-        ttk.Button(top, text="◀ Prev", command=self._prev_page).pack(side="left")
-        ttk.Button(top, text="Next ▶", command=self._next_page).pack(side="left", padx=(6, 0))
+        ttk.Button(top, text="◀ Trang trước", command=self._prev_page).pack(side="left")
+        ttk.Button(top, text="Trang sau ▶", command=self._next_page).pack(side="left", padx=(6, 0))
 
         ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
 
-        ttk.Button(top, text="🔍 Zoom +", command=lambda: self._set_zoom(self._zoom * 1.25)).pack(side="left")
-        ttk.Button(top, text="🔎 Zoom -", command=lambda: self._set_zoom(max(0.6, self._zoom / 1.25))).pack(side="left", padx=(6, 0))
+        ttk.Button(top, text="🔍 Phóng to +", command=lambda: self._set_zoom(self._zoom * 1.25)).pack(side="left")
+        ttk.Button(top, text="🔎 Thu nhỏ -", command=lambda: self._set_zoom(max(0.6, self._zoom / 1.25))).pack(side="left", padx=(6, 0))
 
         ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
 
-        ttk.Checkbutton(top, text="Set as primary", variable=self.var_set_primary).pack(side="left")
+        ttk.Checkbutton(top, text="Đặt làm ảnh chính", variable=self.var_set_primary).pack(side="left")
 
-        ttk.Button(top, text="🧹 Clear (Esc)", command=self._clear_selection).pack(side="right")
-        ttk.Button(top, text="💾 Save crop (Enter)", command=self._save_crop).pack(side="right", padx=(0, 8))
+        ttk.Button(top, text="🧹 Xóa chọn (Esc)", command=self._clear_selection).pack(side="right")
+        ttk.Button(top, text="💾 Lưu ảnh cắt (Enter)", command=self._save_crop).pack(side="right", padx=(0, 8))
 
         # Canvas area
         mid = ttk.Frame(root)
@@ -132,7 +132,7 @@ class PdfCropWindow(tk.Toplevel):
         # Bottom hint
         hint = ttk.Label(
             root,
-            text="Tip: Drag to select. Enter = save crop to item. Esc = clear selection.",
+            text="Mẹo: Kéo để chọn. Enter = lưu ảnh cắt vào sản phẩm. Esc = xóa chọn.",
             anchor="w",
         )
         hint.pack(fill="x", pady=(8, 0))
@@ -206,7 +206,7 @@ class PdfCropWindow(tk.Toplevel):
         self._clear_selection()
 
         self.lbl_info.configure(
-            text=f"PDF: {self.ctx.pdf_path.name} | Page {self._page_index + 1}/{len(self._doc)} | Zoom {self._zoom:.2f} | Item {self.ctx.item_id}"
+            text=f"PDF: {self.ctx.pdf_path.name} | Trang {self._page_index + 1}/{len(self._doc)} | Phóng to {self._zoom:.2f} | Sản phẩm {self.ctx.item_id}"
         )
 
     # -------------------------
@@ -280,16 +280,16 @@ class PdfCropWindow(tk.Toplevel):
 
     def _save_crop(self) -> None:
         if not self.state.db:
-            messagebox.showwarning("No DB", "Database is not loaded.")
+            messagebox.showwarning("Thiếu CSDL", "CSDL chưa được tải.")
             return
         if self._page_pil is None or not self._sel_rect_canvas:
-            messagebox.showwarning("No crop", "Drag on the PDF to select a crop region first.")
+            messagebox.showwarning("Chưa chọn vùng", "Vui lòng kéo trên PDF để chọn vùng cắt trước.")
             return
 
         upsert_asset = getattr(self.state.db, "upsert_asset", None)
         link_asset = getattr(self.state.db, "link_asset_to_item", None)
         if not callable(upsert_asset) or not callable(link_asset):
-            messagebox.showerror("Missing DB feature", "DB has no assets/link support yet.")
+            messagebox.showerror("Thiếu tính năng CSDL", "CSDL chưa hỗ trợ assets/link.")
             return
 
         x0, y0, x1, y1 = self._sel_rect_canvas

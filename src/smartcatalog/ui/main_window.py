@@ -152,7 +152,7 @@ class MainWindow(
 
     def _build_layout(self) -> None:
         self.pack(fill="both", expand=True)
-        self.root.title("SmartCatalog — Catalog DB Builder")
+        self.root.title("SmartCatalog — Trình quản lý danh mục")
 
         self.toolbar = ttk.Frame(self)
         self.toolbar.pack(fill="x", pady=(0, 8))
@@ -163,11 +163,11 @@ class MainWindow(
         self.btn_match_excel = ttk.Button(self.toolbar, text="Cập nhật CSDL từ Excel", command=self.on_build_excel_db)
         self.btn_match_excel.pack(side="left")
 
-        self.btn_refresh = ttk.Button(self.toolbar, text="🔄 Refresh", command=self.refresh_items)
+        self.btn_refresh = ttk.Button(self.toolbar, text="🔄 Làm mới", command=self.refresh_items)
 
         ttk.Separator(self.toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
 
-        self.btn_search_images  = ttk.Button(self.toolbar, text="🔍 Tìm ảnh từ code", command=self.on_search_images_from_excel)
+        self.btn_search_images  = ttk.Button(self.toolbar, text="🔍 Tìm ảnh theo mã", command=self.on_search_images_from_excel)
         self.btn_search_images .pack(side="left")
 
         # Panes
@@ -193,13 +193,13 @@ class MainWindow(
         search_frame = ttk.Frame(self.left_pane)
         search_frame.pack(fill="x", pady=(0, 6))
 
-        ttk.Label(search_frame, text="Search:").pack(side="left")
+        ttk.Label(search_frame, text="Tìm:").pack(side="left")
         self.search_var = tk.StringVar()
         self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
         self.search_entry.pack(side="left", fill="x", expand=True, padx=6)
         self.search_entry.bind("<KeyRelease>", lambda _e: self._filter_items())
 
-        list_frame = ttk.LabelFrame(self.left_pane, text="📦 Items", padding=6)
+        list_frame = ttk.LabelFrame(self.left_pane, text="📦 Sản phẩm", padding=6)
         list_frame.pack(fill="both", expand=True)
 
         columns = ("id", "code", "page", "author", "dimension", "validated")
@@ -236,7 +236,7 @@ class MainWindow(
 
 
     def _build_item_editor_section(self, parent) -> None:
-        editor = ttk.LabelFrame(parent, text="🧾 Item", padding=8)
+        editor = ttk.LabelFrame(parent, text="🧾 Sản phẩm", padding=8)
         editor.pack(fill="x", pady=(0, 0))
         editor.columnconfigure(1, weight=1)
 
@@ -245,59 +245,59 @@ class MainWindow(
         top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         top.columnconfigure(0, weight=1)
 
-        self.pdf_tools_label = ttk.Label(top, text="No PDF selected")
+        self.pdf_tools_label = ttk.Label(top, text="Chưa chọn PDF")
         self.pdf_tools_label.grid(row=0, column=0, sticky="w")
-        self.btn_save = ttk.Button(top, text="💾 Save item", command=self.on_save_item)
+        self.btn_save = ttk.Button(top, text="💾 Lưu", command=self.on_save_item)
         self.btn_save.grid(row=0, column=1, sticky="e", padx=(0, 6))
-        self.btn_add_item = ttk.Button(top, text="➕ Add item", command=self.on_add_item)
+        self.btn_add_item = ttk.Button(top, text="➕ Thêm mới", command=self.on_add_item)
         self.btn_add_item.grid(row=0, column=2, sticky="e", padx=(0, 6))
-        self.btn_delete_item = ttk.Button(top, text="🗑️ Delete item", command=self.on_delete_item)
+        self.btn_delete_item = ttk.Button(top, text="🗑️ Xóa", command=self.on_delete_item)
         self.btn_delete_item.grid(row=0, column=3, sticky="e")
-        self.chk_validated = ttk.Checkbutton(top, text="Validated", variable=self.var_validated)
+        self.chk_validated = ttk.Checkbutton(top, text="Đã kiểm duyệt", variable=self.var_validated)
         self.chk_validated.grid(row=1, column=1, columnspan=3, sticky="e", pady=(4, 0))
 
         # --- Fields (replaces "Item fields" box) ---
         r = 1
 
-        ttk.Label(editor, text="Code").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(editor, text="Mã").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Entry(editor, textvariable=self.var_code).grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
-        ttk.Label(editor, text="Page").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(editor, text="Trang").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Entry(editor, textvariable=self.var_page).grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
-        ttk.Label(editor, text="Category").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(editor, text="Danh mục").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Entry(editor, textvariable=self.var_category).grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
-        ttk.Label(editor, text="Author").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(editor, text="Tác giả").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Entry(editor, textvariable=self.var_author).grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
-        ttk.Label(editor, text="Dimension").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(editor, text="Kích thước").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Entry(editor, textvariable=self.var_dimension).grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
-        ttk.Label(editor, text="Description from PDF").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(editor, text="Mô tả từ PDF").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Entry(editor, textvariable=self.var_small_description).grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
-        ttk.Label(editor, text="Description EN from excel").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(editor, text="Mô tả EN từ Excel").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         self.description_excel_text = scrolledtext.ScrolledText(editor, wrap="word", height=4)
         self.description_excel_text.grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
-        ttk.Label(editor, text="Description VI from excel").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(editor, text="Mô tả VI từ Excel").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         self.description_vietnames_from_excel_text = scrolledtext.ScrolledText(editor, wrap="word", height=4)
         self.description_vietnames_from_excel_text.grid(row=r, column=1, sticky="ew", pady=3)
 
     def on_open_pdf_cropper(self) -> None:
         if not self.state.catalog_pdf_path:
-            messagebox.showwarning("No PDF", "Please build/select a PDF first.")
+            messagebox.showwarning("Chưa có PDF", "Vui lòng tạo/chọn PDF trước.")
             return
         if not self._selected or not getattr(self._selected, "page", None):
-            messagebox.showwarning("No item page", "Select an item with a valid page first.")
+            messagebox.showwarning("Thiếu trang", "Vui lòng chọn sản phẩm có trang hợp lệ.")
             return
 
         def after_save():
@@ -308,7 +308,7 @@ class MainWindow(
             if self._selected and getattr(self._selected, "page", None):
                 self._render_candidates_for_page(int(self._selected.page) - 1)
 
-            self._set_status("✅ Crop saved + linked to item")
+            self._set_status("✅ Đã lưu cắt ảnh và gắn vào sản phẩm")
 
 
         PdfCropWindow(
@@ -317,7 +317,7 @@ class MainWindow(
             item_id=int(self._selected.id),
             page_1based=int(self._selected.page),
             on_after_save=after_save,
-            title="Crop from PDF",
+            title="Cắt từ PDF",
         )
 
 
@@ -330,20 +330,20 @@ class MainWindow(
             return
 
         if not pdf:
-            self.pdf_tools_label.configure(text="No PDF selected")
+            self.pdf_tools_label.configure(text="Chưa chọn PDF")
             return
 
         pdf_name = Path(pdf).name if not isinstance(pdf, Path) else pdf.name
         page = getattr(it, "page", None) if it else None
 
         if page:
-            self.pdf_tools_label.configure(text=f"PDF: {pdf_name} | Item page: {page}")
+            self.pdf_tools_label.configure(text=f"PDF: {pdf_name} | Trang: {page}")
         else:
-            self.pdf_tools_label.configure(text=f"PDF: {pdf_name} | (select an item)")
+            self.pdf_tools_label.configure(text=f"PDF: {pdf_name} | (chọn sản phẩm)")
 
 
     def _build_images_section(self, parent) -> None:
-        images_frame = ttk.LabelFrame(parent, text="🖼 Images", padding=8)
+        images_frame = ttk.LabelFrame(parent, text="🖼 Ảnh", padding=8)
         images_frame.pack(fill="both", expand=False, pady=(8, 0))
 
         thumb_container = ttk.Frame(images_frame)
@@ -373,15 +373,15 @@ class MainWindow(
         btns = ttk.Frame(right_col)
         btns.pack(fill="x", pady=(8, 0))
 
-        ttk.Button(btns, text="➕ Add", command=self.on_add_image).pack(fill="x", pady=(0, 6))
-        ttk.Button(btns, text="⟳ Rotate 90°", command=lambda: self.on_rotate_selected_image(90)).pack(fill="x", pady=(0, 6))
-        ttk.Button(btns, text="➖ Remove selected", command=self.on_remove_selected_thumbnail).pack(fill="x")
+        ttk.Button(btns, text="➕ Thêm ảnh", command=self.on_add_image).pack(fill="x", pady=(0, 6))
+        ttk.Button(btns, text="⟳ Xoay 90°", command=lambda: self.on_rotate_selected_image(90)).pack(fill="x", pady=(0, 6))
+        ttk.Button(btns, text="➖ Xóa ảnh đã chọn", command=self.on_remove_selected_thumbnail).pack(fill="x")
 
     def _build_actions_section(self, parent) -> None:
         actions = ttk.Frame(parent)
         actions.pack(fill="x", pady=(8, 0))
 
-        self.btn_save = ttk.Button(actions, text="💾 Save item", command=self.on_save_item)
+        self.btn_save = ttk.Button(actions, text="💾 Lưu", command=self.on_save_item)
         self.btn_save.pack(side="left", padx=(0, 6))
 
         self.btn_reload = None
@@ -440,7 +440,7 @@ class MainWindow(
 
                 _safe_ui(self.root, lambda: self._apply_busy(False))
                 _safe_ui(self.root, lambda: self._set_status(f"❌ Lỗi: {exc}"))
-                _safe_ui(self.root, lambda msg=err_text: messagebox.showerror("Error", msg))
+                _safe_ui(self.root, lambda msg=err_text: messagebox.showerror("Lỗi", msg))
 
         threading.Thread(target=runner, daemon=True).start()
 
@@ -460,54 +460,54 @@ class MainWindow(
                 existing = sorted([p.name for p in pdf_dir.glob("*.pdf")])
             if existing:
                 messagebox.showinfo(
-                    "Existing catalog PDFs",
-                    "Already in database:\n" + "\n".join(existing),
+                    "PDF danh mục đã có",
+                    "Đã có trong CSDL:\n" + "\n".join(existing),
                 )
         except Exception:
             pass
 
         use_new = messagebox.askyesno(
-            "Load new PDF?",
-            "Do you want to load a new PDF file?",
+            "Tải PDF mới?",
+            "Bạn có muốn tải một file PDF mới không?",
         )
 
         if use_new or not self.state.catalog_pdf_path:
             path = filedialog.askopenfilename(
-                title="Choose catalog PDF",
+                title="Chọn PDF danh mục",
                 initialdir=str(pdf_dir) if pdf_dir.exists() else None,
-                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+                filetypes=[("Tệp PDF", "*.pdf"), ("Tất cả tệp", "*.*")],
             )
             if not path:
                 return
             self.state.set_catalog_pdf(path)
             _safe_ui(self.root, self._update_pdf_tools_label)
-            self._set_status(f"PDF selected: {path}")
+            self._set_status(f"Đã chọn PDF: {path}")
             self._set_preview_text(
-                f"PDF selected:\n{path}\n\nBuilding / updating DB now..."
+                f"Đã chọn PDF:\n{path}\n\nĐang tạo/cập nhật CSDL..."
             )
         else:
             path = str(self.state.catalog_pdf_path)
             if not path:
                 return
             run_again = messagebox.askyesno(
-                "Update DB again?",
-                "Use the current PDF and run the update again?",
+                "Cập nhật lại CSDL?",
+                "Dùng PDF hiện tại và cập nhật lại?",
             )
             if not run_again:
-                self._set_status("Canceled PDF update.")
+                self._set_status("Đã hủy cập nhật PDF.")
                 return
-            self._set_status(f"Using current PDF: {path}")
+            self._set_status(f"Đang dùng PDF hiện tại: {path}")
             self._set_preview_text(
-                f"Using current PDF:\n{path}\n\nBuilding / updating DB now..."
+                f"Đang dùng PDF hiện tại:\n{path}\n\nĐang tạo/cập nhật CSDL..."
             )
 
         # From here: we have a PDF path
         def work():
             build_or_update_db_from_pdf(self.state, self.source_preview, self.status_message)
             _safe_ui(self.root, self.refresh_items)
-            _safe_ui(self.root, lambda: self._set_status("✅ Cập nhật DB từ PDF xong"))
+            _safe_ui(self.root, lambda: self._set_status("✅ Cập nhật CSDL từ PDF xong"))
 
-        self._run_bg("⏳ Đang tạo/cập nhật DB từ PDF...", work)
+        self._run_bg("⏳ Đang tạo/cập nhật CSDL từ PDF...", work)
 
     def on_build_excel_db(self) -> None:
         """
@@ -517,12 +517,12 @@ class MainWindow(
         2) normalized match (spaces removed, weird dashes fixed) -> only if uniquely maps to a DB code
         """
         if not self.state.db:
-            messagebox.showwarning("Missing DB", "Please build/load the DB first (from PDF).")
+            messagebox.showwarning("Thiếu CSDL", "Vui lòng tạo/tải CSDL trước (từ PDF).")
             return
 
         xlsx_path = filedialog.askopenfilename(
-            title="Choose Excel file",
-            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")],
+            title="Chọn file Excel",
+            filetypes=[("Tệp Excel", "*.xlsx *.xls"), ("Tất cả tệp", "*.*")],
         )
         if not xlsx_path:
             return
@@ -716,7 +716,7 @@ class MainWindow(
                     # progress update (every 25 rows)
                     if i % 25 == 0:
                         _safe_ui(self.root, lambda i=i, total=total, updated=updated, missing=missing:
-                                self._set_status(f"⏳ Excel update {i}/{total} | updated={updated} | missing={missing}"))
+                                self._set_status(f"⏳ Cập nhật Excel {i}/{total} | đã cập nhật={updated} | thiếu={missing}"))
 
                 # images: link excel images into assets + item_asset_links (preferred)
                 excel_asset_pdf_path = f"excel:{xlsx_path}"
@@ -780,15 +780,15 @@ class MainWindow(
             # 5) refresh UI and show summary
             _safe_ui(self.root, self.refresh_items)
             _safe_ui(self.root, lambda: self._set_status(
-                f"✅ Excel import done | updated={updated} | missing={missing} | images={images_updated}"
+                f"✅ Nhập Excel xong | đã cập nhật={updated} | thiếu={missing} | ảnh={images_updated}"
             ))
             _safe_ui(
                 self.root,
                 lambda: messagebox.showinfo(
-                    "Excel import done",
-                    "Rows read: {total}\nUpdated: {updated}\nMissing codes: {missing}\n"
-                    "Images mapped: {images_updated}\nImages missing: {images_missing}\n"
-                    "Images found in file: {image_rows_total}".format(
+                    "Nhập Excel xong",
+                    "Số dòng đọc: {total}\nĐã cập nhật: {updated}\nMã thiếu: {missing}\n"
+                    "Ảnh đã gắn: {images_updated}\nẢnh thiếu: {images_missing}\n"
+                    "Ảnh tìm thấy trong file: {image_rows_total}".format(
                         total=total,
                         updated=updated,
                         missing=missing,
@@ -802,30 +802,30 @@ class MainWindow(
                 _safe_ui(
                     self.root,
                     lambda: messagebox.showwarning(
-                        "Missing codes (sample)",
-                        "Some Excel codes did not match DB.\n\n"
-                        f"Sample (up to 30):\n" + "\n".join(missing_codes),
+                        "Mã thiếu (mẫu)",
+                        "Một số mã Excel không khớp với CSDL.\n\n"
+                        f"Mẫu (tối đa 30):\n" + "\n".join(missing_codes),
                     ),
                 )
 
-        self._run_bg("⏳ Updating item descriptions and images from Excel...", work)
+        self._run_bg("⏳ Đang cập nhật mô tả và ảnh từ Excel...", work)
 
     def on_search_images_from_excel(self) -> None:
         """
         Load an Excel file, match codes to DB items, and write image paths back into the same file.
         """
         if not self.state.db:
-            messagebox.showwarning("Missing DB", "Please build/load the DB first (from PDF).")
+            messagebox.showwarning("Thiếu CSDL", "Vui lòng tạo/tải CSDL trước (từ PDF).")
             return
 
         xlsx_path = filedialog.askopenfilename(
-            title="Choose Excel file",
-            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")],
+            title="Chọn file Excel",
+            filetypes=[("Tệp Excel", "*.xlsx *.xls"), ("Tất cả tệp", "*.*")],
         )
         if not xlsx_path:
             return
         xlsx_path = str(xlsx_path)
-        export_path = str(Path(xlsx_path).with_name(f"{Path(xlsx_path).stem}_with_images{Path(xlsx_path).suffix}"))
+        export_path = str(Path(xlsx_path).with_name(f"{Path(xlsx_path).stem}_co_anh{Path(xlsx_path).suffix}"))
 
         def work():
             # 1) detect header + code column using existing heuristics
@@ -857,7 +857,7 @@ class MainWindow(
                     code_col_idx = cell.column
                     break
             if code_col_idx is None:
-                raise ValueError(f"Cannot find code column '{code_col}' in Excel header row.")
+                raise ValueError(f"Không tìm thấy cột mã '{code_col}' trong dòng tiêu đề Excel.")
 
             # write rows
             updated = 0
@@ -1000,22 +1000,22 @@ class MainWindow(
                 _safe_ui(
                     self.root,
                     lambda: messagebox.showwarning(
-                        "No matches",
-                        "No Excel codes matched DB codes.\n\n"
-                        f"Detected code column: {code_col}\n"
-                        f"Header row: {header_row_1}\n"
-                        f"Sample Excel codes: {sample_excel_codes}\n"
-                        f"Sample DB codes: {sample_db_codes}",
+                        "Không có khớp",
+                        "Không có mã Excel nào khớp với mã trong CSDL.\n\n"
+                        f"Cột mã phát hiện: {code_col}\n"
+                        f"Dòng tiêu đề: {header_row_1}\n"
+                        f"Mẫu mã Excel: {sample_excel_codes}\n"
+                        f"Mẫu mã CSDL: {sample_db_codes}",
                     ),
                 )
 
             _safe_ui(self.root, lambda: messagebox.showinfo(
-                "Export done",
-                f"Codes matched: {matched}/{total}\nRows with images: {updated}/{total}\nSaved to: {export_path}",
+                "Xuất file xong",
+                f"Mã khớp: {matched}/{total}\nDòng có ảnh: {updated}/{total}\nĐã lưu: {export_path}",
             ))
             _safe_ui(
                 self.root,
-                lambda: self._set_status(f"✅ Exported images to Excel: matched {matched}/{total}, images {updated}/{total}")
+                lambda: self._set_status(f"✅ Xuất ảnh ra Excel: khớp {matched}/{total}, ảnh {updated}/{total}")
             )
 
         self._run_bg("⏳ Extracting images by code...", work)

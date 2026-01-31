@@ -40,11 +40,11 @@ class PdfViewerControllerMixin:
             return
 
         if not self._pdf_ensure_doc_open():
-            self.pdf_info_label.configure(text="(no PDF loaded)")
+            self.pdf_info_label.configure(text="(chưa tải PDF)")
             return
 
         if page_index < 0 or page_index >= len(self._pdf_doc):
-            self.pdf_info_label.configure(text=f"(invalid page index {page_index})")
+            self.pdf_info_label.configure(text=f"(số trang không hợp lệ {page_index})")
             return
 
         self._pdf_page_index = page_index
@@ -66,7 +66,7 @@ class PdfViewerControllerMixin:
         self.pdf_canvas.configure(scrollregion=(0, 0, pil.width, pil.height))
 
         self._pdf_clear_selection()
-        self.pdf_info_label.configure(text=f"Page {page_index + 1}  |  Zoom {self._pdf_zoom:.2f}")
+        self.pdf_info_label.configure(text=f"Trang {page_index + 1}  |  Phóng to {self._pdf_zoom:.2f}")
 
     # -------------------------
     # Selection rectangle
@@ -135,12 +135,12 @@ class PdfViewerControllerMixin:
         if (x1 - x0) < 10 or (y1 - y0) < 10:
             self._pdf_clear_selection()
             self._sel_start = None
-            self.pdf_info_label.configure(text="(selection too small)")
+            self.pdf_info_label.configure(text="(vùng chọn quá nhỏ)")
             return
 
         self._sel_rect_canvas = (x0, y0, x1, y1)
         self._sel_start = None
-        self.pdf_info_label.configure(text=f"Selected: ({x0},{y0}) → ({x1},{y1})")
+        self.pdf_info_label.configure(text=f"Đã chọn: ({x0},{y0}) → ({x1},{y1})")
 
     # -------------------------
     # Crop -> Asset -> Link
@@ -153,25 +153,25 @@ class PdfViewerControllerMixin:
         """
         it = self._selected
         if not it or not self.state.db:
-            messagebox.showwarning("No selection", "Please select an item first.")
+            messagebox.showwarning("Chưa chọn", "Vui lòng chọn sản phẩm trước.")
             return
 
         if self._pdf_page_pil is None or self._pdf_page_index is None:
-            messagebox.showwarning("No PDF page", "No PDF page rendered yet.")
+            messagebox.showwarning("Chưa có trang PDF", "Chưa có trang PDF nào được hiển thị.")
             return
 
         if not self._sel_rect_canvas:
-            messagebox.showwarning("No crop", "Drag on the PDF to select a crop region first.")
+            messagebox.showwarning("Chưa chọn vùng", "Vui lòng kéo trên PDF để chọn vùng cắt trước.")
             return
 
         if not self.state.catalog_pdf_path:
-            messagebox.showwarning("No PDF", "Please choose a PDF first.")
+            messagebox.showwarning("Chưa có PDF", "Vui lòng chọn PDF trước.")
             return
 
         upsert_asset = getattr(self.state.db, "upsert_asset", None)
         link_asset = getattr(self.state.db, "link_asset_to_item", None)
         if not callable(upsert_asset) or not callable(link_asset):
-            messagebox.showerror("Missing DB feature", "DB has no assets/link support yet. Update CatalogDB first.")
+            messagebox.showerror("Thiếu tính năng CSDL", "CSDL chưa hỗ trợ assets/link. Vui lòng cập nhật CatalogDB trước.")
             return
 
         x0, y0, x1, y1 = self._sel_rect_canvas
@@ -245,7 +245,7 @@ class PdfViewerControllerMixin:
 
         if hasattr(self, "pdf_info_label"):
             try:
-                self.pdf_info_label.configure(text="(no PDF loaded)")
+                self.pdf_info_label.configure(text="(chưa tải PDF)")
             except Exception:
                 pass
 
