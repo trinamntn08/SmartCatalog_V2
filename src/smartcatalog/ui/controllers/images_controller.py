@@ -154,8 +154,52 @@ class ImagesControllerMixin:
         (Kept for now; your main workflow is Add from Page Images which links assets.)
         """
         if not self._selected:
-            messagebox.showwarning("No item", "Please select an item first.")
-            return
+            code = ""
+            try:
+                code = (self.var_code.get() or "").strip()
+            except Exception:
+                code = ""
+
+            if code and getattr(self.state, "db", None):
+                if not getattr(self.state, "items_cache", None):
+                    try:
+                        self.refresh_items()
+                    except Exception:
+                        pass
+
+                match = next((x for x in self.state.items_cache if str(x.code) == code), None)
+                if match is None:
+                    try:
+                        match = self.state.db.get_item_by_code(code)
+                    except Exception:
+                        match = None
+
+                if match is None:
+                    # Create a new item from form inputs, then continue.
+                    try:
+                        self.on_add_item()
+                    except Exception:
+                        pass
+                else:
+                    self._selected = match
+                    try:
+                        if hasattr(self, "items_tree"):
+                            self.items_tree.selection_set(str(match.id))
+                            self.items_tree.focus(str(match.id))
+                    except Exception:
+                        pass
+                    try:
+                        self._update_pdf_tools_label()
+                    except Exception:
+                        pass
+                    try:
+                        self._reload_selected_into_form()
+                    except Exception:
+                        pass
+
+            if not self._selected:
+                messagebox.showwarning("No item", "Please add or select an item first.")
+                return
 
         path = filedialog.askopenfilename(
             title="Choose image",

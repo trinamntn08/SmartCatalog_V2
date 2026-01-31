@@ -18,6 +18,7 @@ class CatalogItem:
     pdf_path: str
     page: Optional[int]
     images: List[str]
+    validated: bool = False
 
     category: str = ""
     author: str = ""

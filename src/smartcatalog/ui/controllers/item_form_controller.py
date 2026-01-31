@@ -46,6 +46,7 @@ class ItemFormControllerMixin:
         self.description_excel_text.insert("1.0", it.description_excel or "")
         self.description_vietnames_from_excel_text.delete("1.0", "end")
         self.description_vietnames_from_excel_text.insert("1.0", it.description_vietnames_from_excel or "")
+        self.var_validated.set(bool(getattr(it, "validated", False)))
 
         # Thumbnails (linked images for item)
         source_map = {}
@@ -110,6 +111,7 @@ class ItemFormControllerMixin:
             description_excel=it.description_excel or "",
             description_vietnames_from_excel=getattr(it, "description_vietnames_from_excel", "") or "",
             pdf_path=getattr(it, "pdf_path", "") or "",
+            validated=bool(getattr(it, "validated", False)),
             image_paths=it.images or [],
         )
 
@@ -141,6 +143,7 @@ class ItemFormControllerMixin:
         it.author = (self.var_author.get() or "").strip()
         it.dimension = (self.var_dimension.get() or "").strip()
         it.small_description = (self.var_small_description.get() or "").strip()
+        it.validated = bool(self.var_validated.get())
 
         # Description from Excel
         desc_excel = (self.description_excel_text.get("1.0", "end-1c") or "").strip()
@@ -161,8 +164,132 @@ class ItemFormControllerMixin:
                 description_excel=it.description_excel,
                 description_vietnames_from_excel=getattr(it, "description_vietnames_from_excel", "") or "",
                 pdf_path=getattr(it, "pdf_path", "") or "",
+                validated=bool(getattr(it, "validated", False)),
                 image_paths=it.images or [],
             )
             self.refresh_items()
 
         self._set_status(f"✅ Saved item {it.id} ({it.code})")
+
+    def on_add_item(self) -> None:
+        if not getattr(self.state, "db", None):
+            messagebox.showwarning("Missing DB", "Please build/load the DB first (from PDF).")
+            return
+
+        code = (self.var_code.get() or "").strip()
+        if not code:
+            messagebox.showerror("Invalid", "Code cannot be empty.")
+            return
+
+        existing = self.state.db.get_item_by_code(code)
+        if existing is not None:
+            messagebox.showerror("Exists", f"Code '{code}' already exists. Use 'Save item' to edit it.")
+            return
+
+        page_str = (self.var_page.get() or "").strip()
+        page_val: Optional[int] = None
+        if page_str:
+            try:
+                page_val = int(page_str)
+            except ValueError:
+                messagebox.showerror("Invalid", "Page must be an integer.")
+                return
+
+        category = (self.var_category.get() or "").strip()
+        author = (self.var_author.get() or "").strip()
+        dimension = (self.var_dimension.get() or "").strip()
+        small_description = (self.var_small_description.get() or "").strip()
+        desc_excel = (self.description_excel_text.get("1.0", "end-1c") or "").strip()
+        desc_vi_excel = (self.description_vietnames_from_excel_text.get("1.0", "end-1c") or "").strip()
+        validated = bool(self.var_validated.get())
+
+        pdf_path = ""
+        try:
+            if getattr(self.state, "catalog_pdf_path", None):
+                pdf_path = str(self.state.catalog_pdf_path)
+        except Exception:
+            pdf_path = ""
+
+        item_id = self.state.db.upsert_by_code(
+            code=code,
+            page=page_val,
+            category=category,
+            author=author,
+            dimension=dimension,
+            small_description=small_description,
+            description="",
+            description_excel=desc_excel,
+            description_vietnames_from_excel=desc_vi_excel,
+            pdf_path=pdf_path,
+            validated=validated,
+            image_paths=[],
+        )
+
+        self.refresh_items()
+
+        # Select the new item in the tree + reload form.
+        try:
+            new_item = next((x for x in self.state.items_cache if x.id == item_id), None)
+            if new_item is None:
+                new_item = self.state.db.get_item_by_code(code)
+            self._selected = new_item
+            if new_item and hasattr(self, "items_tree"):
+                self.items_tree.selection_set(str(new_item.id))
+                self.items_tree.focus(str(new_item.id))
+            self._update_pdf_tools_label()
+            self._reload_selected_into_form()
+        except Exception:
+            pass
+
+        self._set_status(f"✅ Added item {item_id} ({code})")
+
+    def on_delete_item(self) -> None:
+        it = getattr(self, "_selected", None)
+        if not it:
+            messagebox.showwarning("No selection", "Please select an item on the left first.")
+            return
+
+        if not getattr(self.state, "db", None):
+            messagebox.showwarning("Missing DB", "Please build/load the DB first (from PDF).")
+            return
+
+        item_id = int(getattr(it, "id", 0) or 0)
+        if not item_id:
+            messagebox.showwarning("Invalid", "Selected item has no valid ID.")
+            return
+
+        code = str(getattr(it, "code", "") or "").strip()
+        if not messagebox.askyesno("Delete item", f"Delete item {item_id} ({code})?"):
+            return
+
+        conn = self.state.db.connect()
+        try:
+            conn.execute("DELETE FROM items WHERE id=?", (item_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        self._selected = None
+        try:
+            if hasattr(self, "items_tree"):
+                self.items_tree.selection_remove(self.items_tree.selection())
+        except Exception:
+            pass
+
+        try:
+            self.var_code.set("")
+            self.var_page.set("")
+            self.var_category.set("")
+            self.var_author.set("")
+            self.var_dimension.set("")
+            self.var_small_description.set("")
+            self.var_validated.set(False)
+            self.description_excel_text.delete("1.0", "end")
+            self.description_vietnames_from_excel_text.delete("1.0", "end")
+            self._clear_thumbnails()
+        except Exception:
+            pass
+
+        self.refresh_items()
+        self._update_pdf_tools_label()
+        self._set_status(f"✅ Deleted item {item_id} ({code})")

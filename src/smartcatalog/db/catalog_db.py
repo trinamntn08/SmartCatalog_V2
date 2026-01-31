@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS items (
   description_vietnames_from_excel TEXT NOT NULL DEFAULT '',
   pdf_path TEXT NOT NULL DEFAULT '',
   page INTEGER,
+  validated INTEGER NOT NULL DEFAULT 0,
 
   category TEXT NOT NULL DEFAULT '',
   author TEXT NOT NULL DEFAULT '',
@@ -128,6 +129,7 @@ class CatalogDB:
             "description_excel": "TEXT NOT NULL DEFAULT ''",
             "description_vietnames_from_excel": "TEXT NOT NULL DEFAULT ''",
             "pdf_path": "TEXT NOT NULL DEFAULT ''",
+            "validated": "INTEGER NOT NULL DEFAULT 0",
         }
         cur = conn.cursor()
         for col, ddl in cols.items():
@@ -172,7 +174,7 @@ class CatalogDB:
 
             # select only columns that exist (safe across migrations)
             select_cols = ["id", "code", "description", "page"]
-            for opt in ["category", "author", "dimension", "small_description", "images", "description_excel", "pdf_path"]:
+            for opt in ["category", "author", "dimension", "small_description", "images", "description_excel", "pdf_path", "validated"]:
                 if opt in cols:
                     select_cols.append(opt)
             if "description_vietnames_from_excel" in cols:
@@ -265,6 +267,7 @@ class CatalogDB:
                         pdf_path=str(get("pdf_path", "") or ""),
                         page=(int(get("page")) if get("page") not in (None, "") else None),
                         images=images,
+                        validated=bool(int(get("validated") or 0)),
                         category=str(get("category", "") or ""),
                         author=str(get("author", "") or ""),
                         dimension=str(get("dimension", "") or ""),
@@ -311,7 +314,7 @@ class CatalogDB:
                 """
                 SELECT id, code, description, page,
                        description_excel, pdf_path, category, author, dimension, small_description
-                       , description_vietnames_from_excel
+                       , description_vietnames_from_excel, validated
                 FROM items
                 WHERE code=?
                 """,
@@ -338,6 +341,7 @@ class CatalogDB:
                 dimension=str(r["dimension"] or ""),
                 small_description=str(r["small_description"] or ""),
                 images=images,
+                validated=bool(int(r["validated"] or 0)),
             )
         finally:
             if owns:
@@ -641,6 +645,7 @@ class CatalogDB:
         author: str = "",
         dimension: str = "",
         small_description: str = "",
+        validated: bool = False,
         description: str = "",
         description_excel: Optional[str] = None,
         description_vietnames_from_excel: Optional[str] = None,
@@ -690,7 +695,8 @@ class CatalogDB:
                         category=?,
                         author=?,
                         dimension=?,
-                        small_description=?
+                        small_description=?,
+                        validated=?
                     WHERE id=?
                     """,
                     (
@@ -703,6 +709,7 @@ class CatalogDB:
                         author,
                         dimension,
                         small_description,
+                        1 if validated else 0,
                         item_id,
                     ),
                 )
@@ -716,8 +723,8 @@ class CatalogDB:
                     pdf_path = ""
                 cur = conn.execute(
                     """
-                    INSERT INTO items(code, description, description_excel, description_vietnames_from_excel, pdf_path, page, category, author, dimension, small_description)
-                    VALUES(?,?,?,?,?,?,?,?,?,?)
+                    INSERT INTO items(code, description, description_excel, description_vietnames_from_excel, pdf_path, page, validated, category, author, dimension, small_description)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         code,
@@ -726,6 +733,7 @@ class CatalogDB:
                         description_vietnames_from_excel,
                         pdf_path,
                         page,
+                        1 if validated else 0,
                         category,
                         author,
                         dimension,

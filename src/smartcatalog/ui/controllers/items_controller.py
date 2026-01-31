@@ -40,7 +40,8 @@ class ItemsControllerMixin:
                 f"{it.id} {it.code} {it.page or ''} "
                 f"{getattr(it,'category','')} {getattr(it,'author','')} "
                 f"{getattr(it,'dimension','')} {getattr(it,'small_description','')} "
-                f"{it.description} {getattr(it,'description_excel','')} {getattr(it,'description_vietnames_from_excel','')}"
+                f"{it.description} {getattr(it,'description_excel','')} {getattr(it,'description_vietnames_from_excel','')} "
+                f"{'validated' if getattr(it, 'validated', False) else ''}"
             ).lower()
 
             if q and q not in text:
@@ -56,6 +57,7 @@ class ItemsControllerMixin:
                     "" if it.page is None else it.page,
                     getattr(it, "author", ""),
                     getattr(it, "dimension", ""),
+                    "✅" if getattr(it, "validated", False) else "",
                 ),
             )
 
@@ -78,6 +80,8 @@ class ItemsControllerMixin:
                 return (getattr(it, "author", "") or "").lower()
             if col == "dimension":
                 return (getattr(it, "dimension", "") or "").lower()
+            if col == "validated":
+                return 1 if getattr(it, "validated", False) else 0
             return ""
 
         self.state.items_cache.sort(key=key_fn, reverse=self._sort_desc)
@@ -99,6 +103,7 @@ class ItemsControllerMixin:
             "category": "Category",
             "author": "Author",
             "dimension": "Dimension",
+            "validated": "Validated",
             "small_description": "Small desc",
             "description": "Description",
         }

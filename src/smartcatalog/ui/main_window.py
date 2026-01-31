@@ -129,6 +129,7 @@ class MainWindow(
         self.var_author = tk.StringVar()
         self.var_dimension = tk.StringVar()
         self.var_small_description = tk.StringVar()
+        self.var_validated = tk.BooleanVar(value=False)
 
         self._thumb_refs: list[ImageTk.PhotoImage] = []
         self._full_img_ref: Optional[ImageTk.PhotoImage] = None
@@ -163,7 +164,6 @@ class MainWindow(
         self.btn_match_excel.pack(side="left")
 
         self.btn_refresh = ttk.Button(self.toolbar, text="🔄 Refresh", command=self.refresh_items)
-        self.btn_refresh.pack(side="left", padx=(0, 6))
 
         ttk.Separator(self.toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
 
@@ -202,19 +202,21 @@ class MainWindow(
         list_frame = ttk.LabelFrame(self.left_pane, text="📦 Items", padding=6)
         list_frame.pack(fill="both", expand=True)
 
-        columns = ("id", "code", "page", "author", "dimension")
+        columns = ("id", "code", "page", "author", "dimension", "validated")
         self.items_tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=18)
         self.items_tree.heading("id", command=lambda: self._sort_by("id"))
         self.items_tree.heading("code",command=lambda: self._sort_by("code"))
         self.items_tree.heading("page", command=lambda: self._sort_by("page"))
         self.items_tree.heading("author", command=lambda: self._sort_by("author"))
         self.items_tree.heading("dimension", command=lambda: self._sort_by("dimension"))
+        self.items_tree.heading("validated", command=lambda: self._sort_by("validated"))
 
         self.items_tree.column("id", width=40, anchor="center")
         self.items_tree.column("code", width=150, anchor="w")
         self.items_tree.column("page", width=40, anchor="center")
         self.items_tree.column("author", width=150, anchor="w")
         self.items_tree.column("dimension", width=150, anchor="w")
+        self.items_tree.column("validated", width=70, anchor="center")
 
         yscroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.items_tree.yview)
         self.items_tree.configure(yscrollcommand=yscroll.set)
@@ -246,7 +248,13 @@ class MainWindow(
         self.pdf_tools_label = ttk.Label(top, text="No PDF selected")
         self.pdf_tools_label.grid(row=0, column=0, sticky="w")
         self.btn_save = ttk.Button(top, text="💾 Save item", command=self.on_save_item)
-        self.btn_save.grid(row=0, column=1, sticky="e")
+        self.btn_save.grid(row=0, column=1, sticky="e", padx=(0, 6))
+        self.btn_add_item = ttk.Button(top, text="➕ Add item", command=self.on_add_item)
+        self.btn_add_item.grid(row=0, column=2, sticky="e", padx=(0, 6))
+        self.btn_delete_item = ttk.Button(top, text="🗑️ Delete item", command=self.on_delete_item)
+        self.btn_delete_item.grid(row=0, column=3, sticky="e")
+        self.chk_validated = ttk.Checkbutton(top, text="Validated", variable=self.var_validated)
+        self.chk_validated.grid(row=1, column=1, columnspan=3, sticky="e", pady=(4, 0))
 
         # --- Fields (replaces "Item fields" box) ---
         r = 1
@@ -401,7 +409,7 @@ class MainWindow(
     def _apply_busy(self, busy: bool) -> None:
         self._busy.set(busy)
         for w in (self.btn_build_pdf, self.btn_refresh, self.btn_match_excel, self.btn_search_images,
-                  self.btn_save):
+                  self.btn_save, self.btn_add_item, self.btn_delete_item):
             w.configure(state=("disabled" if busy else "normal"))
 
         if busy:
