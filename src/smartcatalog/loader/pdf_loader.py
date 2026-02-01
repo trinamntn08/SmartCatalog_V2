@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional, Callable, Any
-from PIL import Image
+import hashlib
 import io
+import math
+from PIL import Image
 
 import fitz  # PyMuPDF
 
@@ -148,7 +150,69 @@ def _register_page_assets_and_link_to_items(
                     verified=False,
                     is_primary=False,
                     conn=conn,
-                )
+                ) 
+
+
+def _distance_between_rects(rect1: fitz.Rect, rect2: fitz.Rect) -> float:
+    c1x = (rect1.x0 + rect1.x1) / 2.0
+    c1y = (rect1.y0 + rect1.y1) / 2.0
+    c2x = (rect2.x0 + rect2.x1) / 2.0
+    c2y = (rect2.y0 + rect2.y1) / 2.0
+    return math.hypot(c2x - c1x, c2y - c1y)
+
+
+def _handle_jpeg2000_conversion(image_bytes: bytes, image_ext: str) -> tuple[bytes, str]:
+    if image_ext.lower() in ("jp2", "jpx", "j2k", "j2c"):
+        im = Image.open(io.BytesIO(image_bytes))
+        out = io.BytesIO()
+        im.save(out, format="PNG")
+        return out.getvalue(), "png"
+    return image_bytes, image_ext
+
+
+def _nearest_image_for_code_on_page(
+    page: fitz.Page,
+    keyword_rect: fitz.Rect,
+) -> Optional[tuple[bytes, str, fitz.Rect]]:
+    try:
+        nearest: Optional[tuple[bytes, str, fitz.Rect]] = None
+        nearest_dist = float("inf")
+
+        for img in page.get_images(full=True):
+            xref = img[0]
+            rects = page.get_image_rects(xref) or []
+            if not rects:
+                continue
+
+            base = page.parent.extract_image(xref)
+            image_bytes = base["image"]
+            image_ext = base.get("ext", "png")
+
+            for r in rects:
+                img_rect = fitz.Rect(r)
+                # Skip images below the keyword (prefer above/overlapping)
+                if keyword_rect.y1 < img_rect.y0:
+                    continue
+
+                d = _distance_between_rects(img_rect, keyword_rect)
+                if d < nearest_dist:
+                    image_bytes, image_ext = _handle_jpeg2000_conversion(image_bytes, image_ext)
+                    nearest = (image_bytes, image_ext, img_rect)
+                    nearest_dist = d
+
+        return nearest
+    except Exception:
+        return None
+
+
+def _save_image_bytes_as_png(image_bytes: bytes, out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    im = Image.open(io.BytesIO(image_bytes))
+    if im.mode != "RGBA":
+        im = im.convert("RGBA")
+    white_bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+    im = Image.alpha_composite(white_bg, im).convert("RGB")
+    im.save(out_path, format="PNG", quality=95)
 
 
 def build_or_update_db_from_pdf(
@@ -193,6 +257,9 @@ def build_or_update_db_from_pdf(
 
         inserted = 0
         scanned = 0
+        skipped_validated = 0
+        skipped_excel = 0
+        images_added = 0
 
         for i in range(start_idx, end_idx + 1):
             scanned += 1
@@ -207,6 +274,24 @@ def build_or_update_db_from_pdf(
 
             # upsert items first (legacy behavior)
             for it in items:
+                existing = state.db.get_item_by_code(it.code, conn=conn)
+                has_any_images = False
+                has_excel_images = False
+                legacy_images: list[str] = []
+
+                if existing:
+                    sources = state.db.list_image_sources_for_item(existing.id, conn=conn)
+                    has_any_images = bool(sources)
+                    has_excel_images = any(src == "excel" for _p, src in sources)
+                    legacy_images = state.db.list_images(existing.id, conn=conn)
+
+                    if existing.validated:
+                        skipped_validated += 1
+                        continue
+                    if has_excel_images:
+                        skipped_excel += 1
+                        continue
+
                 desc = " | ".join([p for p in (it.category, it.author, it.dimension, it.small_description) if p])
 
                 item_id = state.db.upsert_by_code(
@@ -216,13 +301,48 @@ def build_or_update_db_from_pdf(
                     author=it.author,
                     dimension=it.dimension,
                     small_description=it.small_description,
+                    validated=bool(existing.validated) if existing else False,
                     description=desc,
                     pdf_path=str(pdf_path),
-                    image_paths=[],
+                    image_paths=legacy_images if existing else [],
                     conn=conn,
                 )
 
                 inserted += 1
+
+                # Extract & link image only if item has no images yet
+                if not has_any_images:
+                    nearest = _nearest_image_for_code_on_page(page, fitz.Rect(it.bbox))
+                    if nearest:
+                        image_bytes, image_ext, img_rect = nearest
+                        image_bytes, image_ext = _handle_jpeg2000_conversion(image_bytes, image_ext)
+                        sha = hashlib.sha256(image_bytes).hexdigest()
+                        safe_code = it.code.replace("/", "_")
+                        out_dir = state.assets_dir / "pdf_extract" / f"p{page_no:04d}"
+                        out_path = out_dir / f"{safe_code}_{sha[:12]}.png"
+
+                        if not out_path.exists():
+                            _save_image_bytes_as_png(image_bytes, out_path)
+
+                        asset_id = state.db.upsert_asset(
+                            pdf_path=str(pdf_path),
+                            page=page_no,
+                            asset_path=str(out_path),
+                            bbox=(img_rect.x0, img_rect.y0, img_rect.x1, img_rect.y1),
+                            source="extract",
+                            sha256=sha,
+                            conn=conn,
+                        )
+                        state.db.link_asset_to_item(
+                            item_id=int(item_id),
+                            asset_id=int(asset_id),
+                            match_method="keyword_nearest",
+                            score=None,
+                            verified=False,
+                            is_primary=False,
+                            conn=conn,
+                        )
+                        images_added += 1
 
             if page_no % 10 == 0:
                 _set_status(status_message, f"Đã xử lý trang {page_no}/{end_idx+1} | sản phẩm đã cập nhật: {inserted}")
@@ -230,7 +350,9 @@ def build_or_update_db_from_pdf(
                     source_preview,
                     f"Page {page_no}\n"
                     f"Found {len(items)} item codes\n"
-                    f"Saved 0 images (disabled)\n\n"
+                    f"Images added: {images_added}\n"
+                    f"Skipped validated: {skipped_validated}\n"
+                    f"Skipped excel: {skipped_excel}\n\n"
                     f"Examples:\n"
                     + "\n".join([
                         f"- {it.code}: {it.category} | {it.author} | {it.small_description} | {it.dimension}"
@@ -238,7 +360,11 @@ def build_or_update_db_from_pdf(
                     ])
                 )
 
-        _set_status(status_message, f"✅ Xong. Trang đã quét: {scanned}. Sản phẩm đã cập nhật: {inserted}.")
+        _set_status(
+            status_message,
+            f"✅ Xong. Trang đã quét: {scanned}. Sản phẩm đã cập nhật: {inserted}. "
+            f"Bỏ qua validated: {skipped_validated}. Bỏ qua excel: {skipped_excel}. Đã gán ảnh: {images_added}."
+        )
 
     finally:
         try:

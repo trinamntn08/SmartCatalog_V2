@@ -97,7 +97,7 @@ class ImagesControllerMixin:
             if s == "manual_crop":
                 return "Cắt tay"
             if s in ("extract", "page_extract"):
-                return "Từ trang"
+                return "Từ pdf"
             if s == "add":
                 return "Thêm"
             return s.upper() if s else ""
