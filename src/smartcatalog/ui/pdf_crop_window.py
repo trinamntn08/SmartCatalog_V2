@@ -65,9 +65,6 @@ class PdfCropWindow(tk.Toplevel):
         self._sel_rect_id: Optional[int] = None
         self._sel_rect_canvas: Optional[tuple[int, int, int, int]] = None
 
-        # UI vars
-        self.var_set_primary = tk.BooleanVar(value=True)
-
         self._build_ui()
         self._bind_shortcuts()
 
@@ -104,8 +101,6 @@ class PdfCropWindow(tk.Toplevel):
         ttk.Button(top, text="🔎 Thu nhỏ -", command=lambda: self._set_zoom(max(0.6, self._zoom / 1.25))).pack(side="left", padx=(6, 0))
 
         ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
-
-        ttk.Checkbutton(top, text="Đặt làm ảnh chính", variable=self.var_set_primary).pack(side="left")
 
         ttk.Button(top, text="🧹 Xóa chọn (Esc)", command=self._clear_selection).pack(side="right")
         ttk.Button(top, text="💾 Lưu ảnh cắt (Enter)", command=self._save_crop).pack(side="right", padx=(0, 8))
@@ -296,7 +291,7 @@ class PdfCropWindow(tk.Toplevel):
         crop = self._page_pil.crop((x0, y0, x1, y1))
 
         # Save into: config/database/assets/manual_crop/pXXXX/
-        out_dir = self.state.data_dir / "assets" / "manual_crop" / f"p{(self._page_index + 1):04d}"
+        out_dir = self.state.assets_dir / "pdf_import" / "manual_crop" / f"p{(self._page_index + 1):04d}"
         base = f"item{self.ctx.item_id}_p{(self._page_index + 1):04d}"
         out_path = self._next_crop_filename(out_dir, base)
         crop.save(out_path, format="PNG")
@@ -322,11 +317,6 @@ class PdfCropWindow(tk.Toplevel):
             verified=True,
             is_primary=False,
         )
-
-        if self.var_set_primary.get():
-            set_primary = getattr(self.state.db, "set_primary_asset_for_item", None)
-            if callable(set_primary):
-                set_primary(item_id=int(self.ctx.item_id), asset_id=int(asset_id))
 
         # Refresh parent UI + close
         if callable(self.on_after_save):

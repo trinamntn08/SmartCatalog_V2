@@ -5,8 +5,6 @@ python-docx
 rapidfuzz
 python-Levenshtein
 regex
-layoutparser
 numpy
-pdf2image
 reportlab
 openpyxl>=3.1.0

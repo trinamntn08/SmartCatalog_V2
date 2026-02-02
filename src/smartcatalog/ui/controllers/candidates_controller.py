@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import threading
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -450,10 +451,14 @@ class CandidatesControllerMixin:
                 messagebox.showwarning("PDF", "Chưa đặt đường dẫn PDF.")
                 return
 
-            assets_dir: Path = self.state.data_dir / "assets"
+            assets_dir: Path = self.state.assets_dir / "pdf_import"
             assets_dir.mkdir(parents=True, exist_ok=True)
 
-            filename = f"page{img.page_index + 1:04d}_xref{img.xref}.{img.ext}"
+            # Include a pdf-specific key to avoid collisions across different PDFs.
+            pdf_stem = Path(pdf_path).stem or "pdf"
+            safe_stem = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in pdf_stem)
+            pdf_key = hashlib.sha256(pdf_path.encode("utf-8")).hexdigest()[:8]
+            filename = f"{safe_stem}_{pdf_key}_page{img.page_index + 1:04d}_xref{img.xref}.{img.ext}"
             path = assets_dir / filename
 
             if not path.exists():

@@ -183,7 +183,7 @@ def _detect_code_column(df: pd.DataFrame) -> str:
     for c in df.columns:
         norm_to_real[_normalize_header_text(c)] = c
 
-    code_candidates = ("product code", "code", "item code", "mÃ£", "ma", "mÃ£ sp", "ma sp")
+    code_candidates = ("product code", "code", "item code", "mã", "ma", "mã sp", "ma sp")
 
     def find_exact(cands) -> Optional[str]:
         for cand in cands:
@@ -197,7 +197,7 @@ def _detect_code_column(df: pd.DataFrame) -> str:
     if code_col is None:
         for c in df.columns:
             t = _normalize_header_text(c)
-            if "code" in t or t in ("mÃ£", "ma") or "mÃ£" in t:
+            if "code" in t or t in ("mã", "ma") or "mã" in t:
                 code_col = c
                 break
 

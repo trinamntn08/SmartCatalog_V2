@@ -318,7 +318,7 @@ def build_or_update_db_from_pdf(
                         image_bytes, image_ext = _handle_jpeg2000_conversion(image_bytes, image_ext)
                         sha = hashlib.sha256(image_bytes).hexdigest()
                         safe_code = it.code.replace("/", "_")
-                        out_dir = state.assets_dir / "pdf_extract" / f"p{page_no:04d}"
+                        out_dir = state.assets_dir / "pdf_import" / f"p{page_no:04d}"
                         out_path = out_dir / f"{safe_code}_{sha[:12]}.png"
 
                         if not out_path.exists():

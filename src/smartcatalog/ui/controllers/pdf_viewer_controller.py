@@ -178,7 +178,7 @@ class PdfViewerControllerMixin:
 
         crop = self._pdf_page_pil.crop((x0, y0, x1, y1))
 
-        out_dir = self.state.data_dir / "assets" / "manual_crop" / f"p{(self._pdf_page_index + 1):04d}"
+        out_dir = self.state.assets_dir / "pdf_import" / "manual_crop" / f"p{(self._pdf_page_index + 1):04d}"
         out_dir.mkdir(parents=True, exist_ok=True)
 
         out_path = out_dir / f"item{it.id}_x{x0}_y{y0}_w{x1-x0}_h{y1-y0}.png"

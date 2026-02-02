@@ -6,6 +6,18 @@ from pathlib import Path
 from typing import Optional, List, Any
 import shutil
 import json
+import sys
+
+
+def get_app_dir() -> Path:
+    """
+    Resolve the application root directory.
+    - Frozen .exe: folder containing app.exe
+    - Source run: project root (src/..)
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parents[2]
 
 
 @dataclass
@@ -31,7 +43,7 @@ class AppState:
     """
     Global application state.
     """
-    project_dir: Path = field(default_factory=lambda: Path.cwd())
+    project_dir: Path = field(default_factory=get_app_dir)
 
     # filesystem layout
     data_dir: Path = field(init=False)
@@ -58,6 +70,7 @@ class AppState:
 
     def __post_init__(self) -> None:
         # NEW root: config/database
+        self.project_dir = Path(self.project_dir).resolve()
         self.data_dir = self.project_dir / "config" / "database"
         self.db_path = self.data_dir / "sql" / "catalog.db"
         self.settings_path = self.data_dir / "settings.json"
@@ -73,10 +86,28 @@ class AppState:
 
         # ✅ use the field we defined (keeps everything consistent)
         self.assets_dir.mkdir(parents=True, exist_ok=True)
+        (self.assets_dir / "excel_import").mkdir(parents=True, exist_ok=True)
+        (self.assets_dir / "pdf_import").mkdir(parents=True, exist_ok=True)
+        (self.assets_dir / "manual_import").mkdir(parents=True, exist_ok=True)
 
         (self.data_dir / "catalog_pdfs").mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "images").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "sql").mkdir(parents=True, exist_ok=True)
+        self._write_data_dir_marker()
+
+    def _write_data_dir_marker(self) -> None:
+        """
+        One-time marker file to make the data directory easy to find.
+        """
+        try:
+            marker = self.data_dir / "DATA_DIR.txt"
+            if marker.exists():
+                return
+            marker.write_text(
+                f"This folder stores SmartCatalog data.\nPath: {self.data_dir}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
     # -------------------------
     # Settings persistence
@@ -90,6 +121,8 @@ class AppState:
             pdf = (data.get("catalog_pdf_path") or "").strip()
             if pdf:
                 p = Path(pdf)
+                if not p.is_absolute():
+                    p = (self.data_dir / p).resolve()
                 if p.exists():
                     self.catalog_pdf_path = p
         except Exception:
@@ -97,8 +130,15 @@ class AppState:
 
     def _save_settings(self) -> None:
         try:
+            rel_pdf = ""
+            if self.catalog_pdf_path:
+                p = Path(self.catalog_pdf_path)
+                try:
+                    rel_pdf = str(p.relative_to(self.data_dir))
+                except Exception:
+                    rel_pdf = str(p)
             payload = {
-                "catalog_pdf_path": str(self.catalog_pdf_path) if self.catalog_pdf_path else "",
+                "catalog_pdf_path": rel_pdf,
             }
             self.settings_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         except Exception:

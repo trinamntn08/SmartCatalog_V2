@@ -4,6 +4,9 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from typing import Optional, List, Tuple
+import hashlib
+import shutil
+import datetime
 
 from smartcatalog.state import CatalogItem
 
@@ -96,8 +99,9 @@ class CatalogDB:
     - Each thread should use its own connection (connect()).
     """
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, data_dir: Optional[str | Path] = None):
         self.db_path = str(db_path)
+        self.data_dir: Optional[Path] = Path(data_dir).resolve() if data_dir else None
 
         conn = self.connect()
         try:
@@ -105,6 +109,423 @@ class CatalogDB:
             self._ensure_columns(conn)  # migration safety for old DBs
         finally:
             conn.close()
+
+    # -------------------------
+    # Path normalization (portability)
+    # -------------------------
+
+    def to_db_path(self, p: str) -> str:
+        """
+        Convert an absolute path under data_dir to a relative path.
+        Leave non-path tokens like 'excel:...' untouched.
+        """
+        s = str(p or "").strip()
+        if not s:
+            return s
+        if s.lower().startswith("excel:"):
+            return s
+        if not self.data_dir:
+            return s
+        try:
+            path = Path(s)
+            if path.is_absolute():
+                try:
+                    return str(path.resolve().relative_to(self.data_dir))
+                except Exception:
+                    return s
+        except Exception:
+            return s
+        return s
+
+    def from_db_path(self, p: str) -> str:
+        """
+        Resolve a relative DB path to an absolute path under data_dir.
+        """
+        s = str(p or "").strip()
+        if not s:
+            return s
+        if s.lower().startswith("excel:"):
+            return s
+        if not self.data_dir:
+            return s
+        try:
+            path = Path(s)
+            if not path.is_absolute():
+                return str((self.data_dir / path).resolve())
+        except Exception:
+            return s
+        return s
+
+    def migrate_paths_to_relative(self) -> None:
+        """
+        Convert existing absolute paths in DB to relative paths under data_dir.
+        Safe to run multiple times.
+        """
+        if not self.data_dir:
+            return
+        conn = self.connect()
+        try:
+            # assets.asset_path + assets.pdf_path
+            rows = conn.execute("SELECT id, asset_path, pdf_path FROM assets").fetchall()
+            for r in rows:
+                asset_path = self.to_db_path(r["asset_path"])
+                pdf_path = self.to_db_path(r["pdf_path"])
+                if asset_path != r["asset_path"] or pdf_path != r["pdf_path"]:
+                    conn.execute(
+                        "UPDATE assets SET asset_path=?, pdf_path=? WHERE id=?",
+                        (asset_path, pdf_path, int(r["id"])),
+                    )
+
+            # items.pdf_path + items.images (if column exists)
+            cols = self._get_item_columns(conn)
+            if "pdf_path" in cols:
+                rows = conn.execute("SELECT id, pdf_path FROM items").fetchall()
+                for r in rows:
+                    pdf_path = self.to_db_path(r["pdf_path"])
+                    if pdf_path != r["pdf_path"]:
+                        conn.execute(
+                            "UPDATE items SET pdf_path=? WHERE id=?",
+                            (pdf_path, int(r["id"])),
+                        )
+
+            if "images" in cols:
+                import json
+                rows = conn.execute("SELECT id, images FROM items").fetchall()
+                for r in rows:
+                    raw = r["images"] or ""
+                    new_val = raw
+                    try:
+                        s = str(raw).strip()
+                        if s.startswith("["):
+                            imgs = json.loads(s)
+                            imgs = [self.to_db_path(p) for p in imgs]
+                            new_val = json.dumps(imgs)
+                        elif s:
+                            parts = [p for p in s.split(";") if p.strip()]
+                            parts = [self.to_db_path(p) for p in parts]
+                            new_val = ";".join(parts)
+                    except Exception:
+                        new_val = raw
+                    if new_val != raw:
+                        conn.execute(
+                            "UPDATE items SET images=? WHERE id=?",
+                            (new_val, int(r["id"])),
+                        )
+
+            # item_images.image_path
+            if self._table_exists(conn, "item_images"):
+                rows = conn.execute("SELECT id, image_path FROM item_images").fetchall()
+                for r in rows:
+                    p = self.to_db_path(r["image_path"])
+                    if p != r["image_path"]:
+                        conn.execute(
+                            "UPDATE item_images SET image_path=? WHERE id=?",
+                            (p, int(r["id"])),
+                        )
+
+            conn.commit()
+        finally:
+            conn.close()
+
+    def migrate_legacy_images_to_assets(self, *, fallback_pdf_path: Optional[str] = None) -> dict[str, int]:
+        """
+        Move legacy images in data_dir/images to assets and link them to items.
+        Returns stats: migrated, skipped, missing.
+        """
+        stats = {"migrated": 0, "skipped": 0, "missing": 0}
+        if not self.data_dir:
+            return stats
+
+        images_dir = (self.data_dir / "images").resolve()
+        assets_dir = (self.data_dir / "assets" / "manual_import").resolve()
+        if not images_dir.exists():
+            return stats
+
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT ii.id AS img_id, ii.item_id AS item_id, ii.image_path AS image_path,
+                       it.pdf_path AS pdf_path, it.page AS page
+                FROM item_images ii
+                JOIN items it ON it.id = ii.item_id
+                ORDER BY ii.id ASC
+                """
+            ).fetchall()
+
+            for r in rows:
+                img_id = int(r["img_id"])
+                item_id = int(r["item_id"])
+                raw_path = str(r["image_path"] or "")
+                src_path = Path(self.from_db_path(raw_path))
+                if not src_path.exists():
+                    stats["missing"] += 1
+                    continue
+
+                try:
+                    src_resolved = src_path.resolve()
+                except Exception:
+                    src_resolved = src_path
+
+                # Only migrate legacy images stored under data_dir/images.
+                if images_dir not in src_resolved.parents and src_resolved != images_dir:
+                    stats["skipped"] += 1
+                    continue
+
+                pdf_path = str(r["pdf_path"] or "").strip()
+                if not pdf_path and fallback_pdf_path:
+                    pdf_path = str(fallback_pdf_path)
+                pdf_abs = self.from_db_path(pdf_path) if pdf_path else ""
+                page = int(r["page"]) if r["page"] not in (None, "") else 0
+
+                pdf_stem = Path(pdf_abs).stem if pdf_abs else "pdf"
+                safe_stem = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in pdf_stem)
+                pdf_key_src = pdf_abs or pdf_path or "nopdf"
+                pdf_key = hashlib.sha256(pdf_key_src.encode("utf-8")).hexdigest()[:8]
+
+                ext = (src_resolved.suffix or ".png").lower()
+                base = f"{safe_stem}_{pdf_key}_page{page:04d}_xref{img_id}"
+                dest = assets_dir / f"{base}{ext}"
+                i = 1
+                while dest.exists():
+                    dest = assets_dir / f"{base}_{i}{ext}"
+                    i += 1
+
+                assets_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.move(str(src_resolved), str(dest))
+                except Exception:
+                    shutil.copy2(str(src_resolved), str(dest))
+                    try:
+                        src_resolved.unlink()
+                    except Exception:
+                        pass
+
+                sha256 = ""
+                try:
+                    h = hashlib.sha256()
+                    with dest.open("rb") as f:
+                        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                            h.update(chunk)
+                    sha256 = h.hexdigest()
+                except Exception:
+                    sha256 = ""
+
+                asset_id = self.upsert_asset(
+                    pdf_path=pdf_abs,
+                    page=page,
+                    asset_path=str(dest),
+                    bbox=None,
+                    source="add",
+                    sha256=sha256,
+                    conn=conn,
+                )
+                self.link_asset_to_item(
+                    item_id=item_id,
+                    asset_id=asset_id,
+                    match_method="manual",
+                    score=None,
+                    verified=True,
+                    is_primary=False,
+                    conn=conn,
+                )
+
+                conn.execute("DELETE FROM item_images WHERE id=?", (img_id,))
+                stats["migrated"] += 1
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        return stats
+
+    def migrate_assets_to_pdf_import(self) -> dict[str, int]:
+        """
+        Move legacy asset folders into assets/pdf_import and update DB paths.
+        Returns stats: moved, updated, skipped, missing.
+        """
+        stats = {"moved": 0, "updated": 0, "skipped": 0, "missing": 0}
+        if not self.data_dir:
+            return stats
+
+        old_new = [
+            (self.data_dir / "assets" / "pdf_extract", self.data_dir / "assets" / "pdf_import"),
+            (self.data_dir / "assets" / "manual_crop", self.data_dir / "assets" / "pdf_import" / "manual_crop"),
+        ]
+
+        conn = self.connect()
+        try:
+            rows = conn.execute("SELECT id, asset_path FROM assets").fetchall()
+            for r in rows:
+                asset_id = int(r["id"])
+                raw_path = str(r["asset_path"] or "")
+                abs_path = Path(self.from_db_path(raw_path))
+                try:
+                    abs_resolved = abs_path.resolve()
+                except Exception:
+                    abs_resolved = abs_path
+
+                matched = False
+                for old_root, new_root in old_new:
+                    try:
+                        old_root_resolved = old_root.resolve()
+                    except Exception:
+                        old_root_resolved = old_root
+
+                    if old_root_resolved not in abs_resolved.parents and abs_resolved != old_root_resolved:
+                        continue
+
+                    matched = True
+                    try:
+                        rel = abs_resolved.relative_to(old_root_resolved)
+                    except Exception:
+                        rel = abs_resolved.name
+
+                    dest = new_root / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+
+                    if abs_resolved.exists():
+                        if dest.exists():
+                            try:
+                                if abs_resolved.stat().st_size == dest.stat().st_size:
+                                    abs_resolved.unlink()
+                                else:
+                                    base = dest.stem
+                                    ext = dest.suffix
+                                    i = 1
+                                    new_dest = dest
+                                    while new_dest.exists():
+                                        new_dest = dest.with_name(f"{base}_{i}{ext}")
+                                        i += 1
+                                    shutil.move(str(abs_resolved), str(new_dest))
+                                    dest = new_dest
+                            except Exception:
+                                # If any conflict, leave file in place but still update DB to current dest
+                                pass
+                        else:
+                            shutil.move(str(abs_resolved), str(dest))
+                        stats["moved"] += 1
+                    else:
+                        stats["missing"] += 1
+
+                    new_db_path = self.to_db_path(str(dest))
+                    if new_db_path != raw_path:
+                        conn.execute(
+                            "UPDATE assets SET asset_path=? WHERE id=?",
+                            (new_db_path, asset_id),
+                        )
+                        stats["updated"] += 1
+                    break
+
+                if not matched:
+                    stats["skipped"] += 1
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        return stats
+
+    # -------------------------
+    # Migrations orchestration
+    # -------------------------
+
+    def _migration_log_path(self) -> Optional[Path]:
+        if not self.data_dir:
+            return None
+        log_dir = self.data_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return log_dir / "migrations.log"
+
+    def _append_migration_log(self, msg: str) -> None:
+        path = self._migration_log_path()
+        if not path:
+            return
+        stamp = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        with path.open("a", encoding="utf-8", errors="ignore") as f:
+            f.write(f"{stamp} {msg}\n")
+
+    def _migration_marker_path(self, name: str) -> Optional[Path]:
+        if not self.data_dir:
+            return None
+        marker_dir = self.data_dir / "assets" / ".migrations"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        return marker_dir / f"{name}.done"
+
+    def _preflight_assets_migration(self) -> tuple[bool, str]:
+        if not self.data_dir:
+            return False, "data_dir not set"
+
+        assets_root = self.data_dir / "assets"
+        assets_root.mkdir(parents=True, exist_ok=True)
+
+        # write access check
+        try:
+            test_path = assets_root / ".write_test.tmp"
+            test_path.write_text("ok", encoding="utf-8")
+            test_path.unlink()
+        except Exception as exc:
+            return False, f"write access check failed: {exc}"
+
+        # disk space check (need at least 50MB free)
+        try:
+            usage = shutil.disk_usage(str(assets_root))
+            if usage.free < 50 * 1024 * 1024:
+                return False, "not enough free disk space (<50MB)"
+        except Exception as exc:
+            return False, f"disk usage check failed: {exc}"
+
+        # file count check (log only)
+        try:
+            images_dir = self.data_dir / "images"
+            legacy_count = sum(1 for _ in images_dir.rglob("*") if _.is_file()) if images_dir.exists() else 0
+            assets_count = sum(1 for _ in assets_root.rglob("*") if _.is_file())
+            self._append_migration_log(f"preflight file counts: legacy_images={legacy_count} assets={assets_count}")
+        except Exception:
+            pass
+
+        return True, "ok"
+
+    def migrate_all_assets(self, *, fallback_pdf_path: Optional[str] = None) -> dict[str, int]:
+        """
+        Idempotent migration runner for legacy images and asset folders.
+        Writes a marker on success and logs key events.
+        """
+        stats = {"legacy_migrated": 0, "legacy_skipped": 0, "legacy_missing": 0,
+                 "assets_moved": 0, "assets_updated": 0, "assets_skipped": 0, "assets_missing": 0}
+        marker = self._migration_marker_path("assets_v1")
+        if marker and marker.exists():
+            self._append_migration_log("assets_v1 already migrated; skipping")
+            return stats
+
+        ok, reason = self._preflight_assets_migration()
+        if not ok:
+            self._append_migration_log(f"assets_v1 preflight failed: {reason}")
+            return stats
+
+        self._append_migration_log("assets_v1 migration start")
+        legacy_stats = self.migrate_legacy_images_to_assets(fallback_pdf_path=fallback_pdf_path)
+        assets_stats = self.migrate_assets_to_pdf_import()
+
+        stats.update(
+            legacy_migrated=legacy_stats.get("migrated", 0),
+            legacy_skipped=legacy_stats.get("skipped", 0),
+            legacy_missing=legacy_stats.get("missing", 0),
+            assets_moved=assets_stats.get("moved", 0),
+            assets_updated=assets_stats.get("updated", 0),
+            assets_skipped=assets_stats.get("skipped", 0),
+            assets_missing=assets_stats.get("missing", 0),
+        )
+
+        if marker:
+            marker.write_text("ok\n", encoding="utf-8")
+
+        self._append_migration_log(
+            "assets_v1 done "
+            f"legacy(migrated={stats['legacy_migrated']} skipped={stats['legacy_skipped']} missing={stats['legacy_missing']}) "
+            f"assets(moved={stats['assets_moved']} updated={stats['assets_updated']} skipped={stats['assets_skipped']} missing={stats['assets_missing']})"
+        )
+        return stats
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -238,24 +659,24 @@ class CatalogDB:
                 # images: links -> legacy -> items.images fallback
                 images: list[str] = []
                 if item_id in linked_assets_map:
-                    images = linked_assets_map[item_id]
+                    images = [self.from_db_path(p) for p in linked_assets_map[item_id]]
                 elif item_id in legacy_images_map:
-                    images = legacy_images_map[item_id]
+                    images = [self.from_db_path(p) for p in legacy_images_map[item_id]]
                 else:
                     # fallback: items.images (json list or ';' separated)
                     if "images" in select_cols:
                         raw = get("images", "") or ""
                         if isinstance(raw, (list, tuple)):
-                            images = list(raw)
+                            images = [self.from_db_path(p) for p in list(raw)]
                         else:
                             s = str(raw).strip()
                             if s.startswith("["):
                                 try:
-                                    images = list(json.loads(s))
+                                    images = [self.from_db_path(p) for p in list(json.loads(s))]
                                 except Exception:
                                     images = []
                             elif s:
-                                images = [p for p in s.split(";") if p.strip()]
+                                images = [self.from_db_path(p) for p in s.split(";") if p.strip()]
 
                 items.append(
                     CatalogItem(
@@ -264,7 +685,7 @@ class CatalogDB:
                         description=str(get("description", "") or ""),
                         description_excel=str(get("description_excel", "") or ""),
                         description_vietnames_from_excel=str(get("description_vietnames_from_excel", "") or ""),
-                        pdf_path=str(get("pdf_path", "") or ""),
+                        pdf_path=self.from_db_path(str(get("pdf_path", "") or "")),
                         page=(int(get("page")) if get("page") not in (None, "") else None),
                         images=images,
                         validated=bool(int(get("validated") or 0)),
@@ -297,7 +718,7 @@ class CatalogDB:
                 "SELECT image_path FROM item_images WHERE item_id=? ORDER BY id ASC",
                 (item_id,),
             ).fetchall()
-            return [str(x["image_path"]) for x in rows]
+            return [self.from_db_path(str(x["image_path"])) for x in rows]
         finally:
             if owns:
                 conn.close()
@@ -334,7 +755,7 @@ class CatalogDB:
                 description=str(r["description"] or ""),
                 description_excel=str(r["description_excel"] or ""),
                 description_vietnames_from_excel=str(r["description_vietnames_from_excel"] or ""),
-                pdf_path=str(r["pdf_path"] or ""),
+                pdf_path=self.from_db_path(str(r["pdf_path"] or "")),
                 page=(int(r["page"]) if r["page"] is not None else None),
                 category=str(r["category"] or ""),
                 author=str(r["author"] or ""),
@@ -373,9 +794,11 @@ class CatalogDB:
             self._ensure_columns(conn)
 
         try:
+            pdf_db = self.to_db_path(pdf_path)
+            asset_db = self.to_db_path(asset_path)
             row = conn.execute(
                 "SELECT id FROM assets WHERE pdf_path=? AND page=? AND asset_path=?",
-                (pdf_path, int(page), asset_path),
+                (pdf_db, int(page), asset_db),
             ).fetchone()
             if row:
                 return int(row["id"])
@@ -389,7 +812,7 @@ class CatalogDB:
                 INSERT INTO assets(pdf_path, page, asset_path, x0, y0, x1, y1, source, sha256)
                 VALUES(?,?,?,?,?,?,?,?,?)
                 """,
-                (pdf_path, int(page), asset_path, x0, y0, x1, y1, source, sha256),
+                (pdf_db, int(page), asset_db, x0, y0, x1, y1, source, sha256),
             )
             conn.commit()
             return int(cur.lastrowid)
@@ -421,7 +844,7 @@ class CatalogDB:
                 WHERE pdf_path=? AND page=?
                 ORDER BY id ASC
                 """,
-                (pdf_path, int(page)),
+                (self.to_db_path(pdf_path), int(page)),
             ).fetchall()
         finally:
             if owns:
@@ -509,7 +932,7 @@ class CatalogDB:
                 """,
                 (int(item_id),),
             ).fetchall()
-            return [str(r["asset_path"]) for r in rows]
+            return [self.from_db_path(str(r["asset_path"])) for r in rows]
         finally:
             if owns:
                 conn.close()
@@ -541,7 +964,7 @@ class CatalogDB:
                 (int(item_id),),
             ).fetchall()
             if rows:
-                return [(str(r["asset_path"]), str(r["source"] or "")) for r in rows]
+                return [(self.from_db_path(str(r["asset_path"])), str(r["source"] or "")) for r in rows]
 
             # Fallback: legacy table
             rows = conn.execute(
@@ -553,7 +976,7 @@ class CatalogDB:
                 """,
                 (int(item_id),),
             ).fetchall()
-            return [(str(r["image_path"]), "add") for r in rows]
+            return [(self.from_db_path(str(r["image_path"])), "add") for r in rows]
         finally:
             if owns:
                 conn.close()
@@ -684,6 +1107,7 @@ class CatalogDB:
                     description_vietnames_from_excel = str(row["description_vietnames_from_excel"] or "")
                 if pdf_path is None:
                     pdf_path = str(row["pdf_path"] or "")
+                pdf_path = self.to_db_path(str(pdf_path or ""))
                 conn.execute(
                     """
                     UPDATE items
@@ -721,6 +1145,7 @@ class CatalogDB:
                     description_vietnames_from_excel = ""
                 if pdf_path is None:
                     pdf_path = ""
+                pdf_path = self.to_db_path(str(pdf_path or ""))
                 cur = conn.execute(
                     """
                     INSERT INTO items(code, description, description_excel, description_vietnames_from_excel, pdf_path, page, validated, category, author, dimension, small_description)
@@ -745,7 +1170,7 @@ class CatalogDB:
             for p in image_paths:
                 conn.execute(
                     "INSERT INTO item_images(item_id, image_path) VALUES(?, ?)",
-                    (item_id, p),
+                    (item_id, self.to_db_path(p)),
                 )
 
             conn.commit()

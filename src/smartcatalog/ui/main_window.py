@@ -139,6 +139,7 @@ class MainWindow(
         
 
         self._build_layout()
+
         self._build_left_panel()
         self._build_right_panel()
         self._update_pdf_tools_label()
@@ -720,6 +721,11 @@ class MainWindow(
 
                 # images: link excel images into assets + item_asset_links (preferred)
                 excel_asset_pdf_path = f"excel:{xlsx_path}"
+                excel_asset_pdf_path_db = (
+                    self.state.db.to_db_path(excel_asset_pdf_path)
+                    if self.state.db
+                    else excel_asset_pdf_path
+                )
                 for excel_code, img_paths in image_map.items():
                     # keep order but drop duplicates
                     seen: set[str] = set()
@@ -749,9 +755,10 @@ class MainWindow(
                     conn.execute("DELETE FROM item_asset_links WHERE item_id=?", (item_id,))
                     conn.execute("DELETE FROM item_images WHERE item_id=?", (item_id,))
                     for idx, p in enumerate(unique_paths):
+                        asset_path_db = self.state.db.to_db_path(p) if self.state.db else p
                         asset_row = conn.execute(
                             "SELECT id FROM assets WHERE pdf_path=? AND page=? AND asset_path=?",
-                            (excel_asset_pdf_path, 0, p),
+                            (excel_asset_pdf_path_db, 0, asset_path_db),
                         ).fetchone()
                         if asset_row:
                             asset_id = int(asset_row["id"])
@@ -761,7 +768,7 @@ class MainWindow(
                                 INSERT INTO assets(pdf_path, page, asset_path, x0, y0, x1, y1, source, sha256)
                                 VALUES(?,?,?,?,?,?,?,?,?)
                                 """,
-                                (excel_asset_pdf_path, 0, p, None, None, None, None, "excel", ""),
+                                (excel_asset_pdf_path_db, 0, asset_path_db, None, None, None, None, "excel", ""),
                             )
                             asset_id = int(cur.lastrowid)
                         conn.execute(

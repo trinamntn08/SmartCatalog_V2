@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import shutil
+import hashlib
+import time
 from typing import Optional
 
 import tkinter as tk
@@ -16,7 +19,7 @@ class ImagesControllerMixin:
     Images panel behavior:
     - Render thumbnails for selected item (self._render_thumbnails)
     - Click thumbnail -> select + preview + store self._selected_image_path
-    - Add image -> attaches local file path to selected item (legacy behavior)
+    - Add image -> saves to assets + links to selected item
     - Remove selected -> unlink asset (new) or remove legacy item_images row (fallback)
 
     Assumes MainWindow provides:
@@ -39,12 +42,18 @@ class ImagesControllerMixin:
         self._thumb_refs.clear()
         self._full_img_ref = None
         self._selected_image_path = None
+        if hasattr(self, "image_preview_label"):
+            self.image_preview_label.configure(image="")
 
     def _render_thumbnails(self, image_paths: list[str], source_map: Optional[dict[str, str]] = None) -> None:
         prev_selected = self._selected_image_path
         self._clear_thumbnails()
         if prev_selected and prev_selected in image_paths:
             self._selected_image_path = prev_selected
+
+        # Cache last render inputs for refresh on selection change.
+        self._last_rendered_image_paths = list(image_paths or [])
+        self._last_rendered_source_map = dict(source_map or {})
 
         if not image_paths:
             return
@@ -74,6 +83,9 @@ class ImagesControllerMixin:
                 selected_path,
                 source_map or {},
             )
+
+        if selected_path:
+            self._set_preview_image(selected_path)
 
     def _render_one_thumbnail(
         self,
@@ -108,9 +120,10 @@ class ImagesControllerMixin:
         # Load thumb
         tk_img = None
         try:
-            pil = Image.open(image_path).convert("RGBA")
-            pil.thumbnail(size)
-            tk_img = ImageTk.PhotoImage(pil)
+            with Image.open(image_path) as pil:
+                pil = pil.convert("RGBA")
+                pil.thumbnail(size)
+                tk_img = ImageTk.PhotoImage(pil)
         except Exception:
             tk_img = None
 
@@ -144,14 +157,48 @@ class ImagesControllerMixin:
 
     def _on_select_thumbnail(self, image_path: str) -> None:
         self._selected_image_path = image_path
+        refreshed = False
+        if getattr(self, "_last_rendered_image_paths", None):
+            self._render_thumbnails(
+                self._last_rendered_image_paths,
+                source_map=getattr(self, "_last_rendered_source_map", None),
+            )
+            refreshed = True
+        if not refreshed:
+            self._set_preview_image(image_path)
+
+    def _set_preview_image(self, image_path: Optional[str]) -> None:
+        if not getattr(self, "image_preview_label", None):
+            return
+
+        if not image_path:
+            self.image_preview_label.configure(image="")
+            self._full_img_ref = None
+            return
+
+        try:
+            # Use current label size when available; fallback to a reasonable default.
+            self.image_preview_label.update_idletasks()
+            max_w = int(self.image_preview_label.winfo_width() or 240)
+            max_h = int(self.image_preview_label.winfo_height() or 180)
+            max_w = max(80, max_w)
+            max_h = max(80, max_h)
+
+            with Image.open(image_path) as pil:
+                pil = pil.convert("RGBA")
+                pil.thumbnail((max_w, max_h))
+                self._full_img_ref = ImageTk.PhotoImage(pil)
+            self.image_preview_label.configure(image=self._full_img_ref)
+        except Exception:
+            self.image_preview_label.configure(image="")
+            self._full_img_ref = None
 
     # ----------------------------
     # Add / Remove
     # ----------------------------
     def on_add_image(self) -> None:
         """
-        Legacy add: attach an external image file path to the selected item.
-        (Kept for now; your main workflow is Add from Page Images which links assets.)
+        Add an external image file path to the selected item via assets + links.
         """
         if not self._selected:
             code = ""
@@ -208,24 +255,77 @@ class ImagesControllerMixin:
         if not path:
             return
 
-        self._selected.images = list(self._selected.images or [])
-        self._selected.images.append(path)
+        # Copy into assets folder (new scheme) for portability and collision avoidance
+        pdf_path = ""
+        page = int(getattr(self._selected, "page", 0) or 0)
+        try:
+            data_dir = getattr(self.state, "data_dir", None)
+            if data_dir:
+                assets_dir = Path(data_dir) / "assets" / "manual_import"
+                assets_dir.mkdir(parents=True, exist_ok=True)
 
-        # Persist using legacy upsert (item_images)
+                src = Path(path)
+                ext = src.suffix or ".png"
+
+                pdf_path = str(getattr(self._selected, "pdf_path", "") or "")
+                if not pdf_path and getattr(self.state, "catalog_pdf_path", None):
+                    pdf_path = str(self.state.catalog_pdf_path)
+
+                pdf_stem = Path(pdf_path).stem if pdf_path else "pdf"
+                safe_stem = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in pdf_stem)
+                pdf_key_src = pdf_path or "nopdf"
+                pdf_key = hashlib.sha256(pdf_key_src.encode("utf-8")).hexdigest()[:8]
+                xref = int(time.time() * 1000)
+
+                base = f"{safe_stem}_{pdf_key}_page{page:04d}_xref{xref}"
+                dest = assets_dir / f"{base}{ext.lower()}"
+                i = 1
+                while dest.exists():
+                    dest = assets_dir / f"{base}_{i}{ext.lower()}"
+                    i += 1
+
+                shutil.copy2(str(src), str(dest))
+                path = str(dest)
+        except Exception:
+            # Fallback: keep original path
+            pass
+
         if self.state.db:
-            self.state.db.upsert_by_code(
-                code=self._selected.code,
-                page=self._selected.page,
-                category=getattr(self._selected, "category", "") or "",
-                author=getattr(self._selected, "author", "") or "",
-                dimension=getattr(self._selected, "dimension", "") or "",
-                small_description=getattr(self._selected, "small_description", "") or "",
-                description=self._selected.description or "",
-                description_excel=getattr(self._selected, "description_excel", "") or "",
-                description_vietnames_from_excel=getattr(self._selected, "description_vietnames_from_excel", "") or "",
-                pdf_path=getattr(self._selected, "pdf_path", "") or "",
-                image_paths=self._selected.images,
-            )
+            try:
+                sha256 = ""
+                try:
+                    h = hashlib.sha256()
+                    with open(path, "rb") as f:
+                        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                            h.update(chunk)
+                    sha256 = h.hexdigest()
+                except Exception:
+                    sha256 = ""
+
+                asset_id = self.state.db.upsert_asset(
+                    pdf_path=pdf_path,
+                    page=page,
+                    asset_path=path,
+                    bbox=None,
+                    source="add",
+                    sha256=sha256,
+                )
+                self.state.db.link_asset_to_item(
+                    item_id=int(self._selected.id),
+                    asset_id=int(asset_id),
+                    match_method="manual",
+                    score=None,
+                    verified=True,
+                    is_primary=False,
+                )
+                self._selected.images = self.state.db.list_asset_paths_for_item(int(self._selected.id))
+            except Exception:
+                # Fallback: keep legacy in-memory only
+                self._selected.images = list(self._selected.images or [])
+                self._selected.images.append(path)
+        else:
+            self._selected.images = list(self._selected.images or [])
+            self._selected.images.append(path)
 
         self.refresh_items()
         self._reload_selected_into_form()
@@ -265,8 +365,7 @@ class ImagesControllerMixin:
         # 2) Update in-memory list
         self._selected.images = [p for p in (self._selected.images or []) if p != img_path]
 
-        # 3) Refresh UI + keep selection highlight
-        self.refresh_items()
+        # 3) Refresh UI + keep selection highlight (avoid full refresh for speed)
         try:
             if hasattr(self, "items_tree"):
                 self.items_tree.selection_set(str(item_id))
@@ -289,10 +388,10 @@ class ImagesControllerMixin:
             return
 
         try:
-            pil = Image.open(img_path)
-            # Preserve mode; expand keeps full image
-            rotated = pil.rotate(degrees, expand=True)
-            rotated.save(img_path)
+            with Image.open(img_path) as pil:
+                # Preserve mode; expand keeps full image
+                rotated = pil.rotate(degrees, expand=True)
+                rotated.save(img_path)
         except Exception as e:
             messagebox.showerror("Xoay ảnh thất bại", f"Không thể xoay ảnh:\n{e}")
             return
@@ -319,19 +418,23 @@ class ImagesControllerMixin:
         try:
             # Try unlink from new assets links
             pdf_path = str(getattr(self.state, "catalog_pdf_path", "") or "")
+            img_db_path = img_path
+            if self.state.db:
+                pdf_path = self.state.db.to_db_path(pdf_path)
+                img_db_path = self.state.db.to_db_path(img_path)
             row = None
 
             if pdf_path:
                 row = conn.execute(
                     "SELECT id FROM assets WHERE asset_path=? AND pdf_path=? ORDER BY id DESC LIMIT 1",
-                    (img_path, pdf_path),
+                    (img_db_path, pdf_path),
                 ).fetchone()
 
             if row is None:
                 # fallback: ignore pdf_path (in case pdf_path was stored differently)
                 row = conn.execute(
                     "SELECT id FROM assets WHERE asset_path=? ORDER BY id DESC LIMIT 1",
-                    (img_path,),
+                    (img_db_path,),
                 ).fetchone()
 
             if row is not None:
@@ -346,7 +449,7 @@ class ImagesControllerMixin:
             # Fallback: legacy table
             cur = conn.execute(
                 "DELETE FROM item_images WHERE item_id=? AND image_path=?",
-                (int(item_id), img_path),
+                (int(item_id), img_db_path),
             )
             conn.commit()
             return cur.rowcount > 0
