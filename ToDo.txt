@@ -1,6 +1,0 @@
-1. Fix updateDB from Excel --> Many codes are not read correctly
--->Print which ones are not corrects
-
-2. Implement "Tim anh tu code" button
-
-3. Rework on pdf catalog preview 

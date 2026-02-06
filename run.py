@@ -6,7 +6,6 @@ def _project_root() -> Path:
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
 
-# add likely package roots to import path (dev + frozen)
 root = _project_root()
 candidate_roots = [
     root,

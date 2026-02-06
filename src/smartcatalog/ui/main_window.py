@@ -8,6 +8,9 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 from pathlib import Path
 from typing import Callable, Optional
+import sqlite3
+import shutil
+import datetime
 from PIL import Image, ImageTk
 
 from smartcatalog.state import AppState, CatalogItem
@@ -129,6 +132,10 @@ class MainWindow(
         self.var_author = tk.StringVar()
         self.var_dimension = tk.StringVar()
         self.var_small_description = tk.StringVar()
+        self.var_shape = tk.StringVar()
+        self.var_blade_tip = tk.StringVar()
+        self.var_surface_treatment = tk.StringVar()
+        self.var_material = tk.StringVar()
         self.var_validated = tk.BooleanVar(value=False)
 
         self._thumb_refs: list[ImageTk.PhotoImage] = []
@@ -164,6 +171,9 @@ class MainWindow(
         self.btn_match_excel = ttk.Button(self.toolbar, text="Cập nhật CSDL từ Excel", command=self.on_build_excel_db)
         self.btn_match_excel.pack(side="left")
 
+        self.btn_backup = ttk.Button(self.toolbar, text="💾 Backup CSDL", command=self.on_backup_data)
+        self.btn_backup.pack(side="left", padx=(6, 0))
+
         self.btn_refresh = ttk.Button(self.toolbar, text="🔄 Làm mới", command=self.refresh_items)
 
         ttk.Separator(self.toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
@@ -180,10 +190,6 @@ class MainWindow(
 
         self.panes.add(self.left_pane, weight=1)
         self.panes.add(self.right_pane, weight=3)
-
-        # Hidden log widget (kept for pdf_loader logging, not displayed in UI)
-        self.source_preview = scrolledtext.ScrolledText(self, wrap="word", height=8)
-        self.source_preview.configure(state="disabled")
 
         # Scrollable container inside right pane
         self.right_scroll = ScrollableFrame(self.right_pane)
@@ -203,27 +209,55 @@ class MainWindow(
         list_frame = ttk.LabelFrame(self.left_pane, text="📦 Sản phẩm", padding=6)
         list_frame.pack(fill="both", expand=True)
 
-        columns = ("id", "code", "page", "author", "dimension", "validated")
+        columns = (
+            "id",
+            "code",
+            "page",
+            "category",
+            "author",
+            "shape",
+            "blade_tip",
+            "dimension",
+            "surface_treatment",
+            "material",
+            "validated",
+        )
         self.items_tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=18)
         self.items_tree.heading("id", command=lambda: self._sort_by("id"))
         self.items_tree.heading("code",command=lambda: self._sort_by("code"))
         self.items_tree.heading("page", command=lambda: self._sort_by("page"))
+        self.items_tree.heading("category", command=lambda: self._sort_by("category"))
         self.items_tree.heading("author", command=lambda: self._sort_by("author"))
+        self.items_tree.heading("shape", command=lambda: self._sort_by("shape"))
+        self.items_tree.heading("blade_tip", command=lambda: self._sort_by("blade_tip"))
         self.items_tree.heading("dimension", command=lambda: self._sort_by("dimension"))
+        self.items_tree.heading("surface_treatment", command=lambda: self._sort_by("surface_treatment"))
+        self.items_tree.heading("material", command=lambda: self._sort_by("material"))
         self.items_tree.heading("validated", command=lambda: self._sort_by("validated"))
 
-        self.items_tree.column("id", width=40, anchor="center")
-        self.items_tree.column("code", width=150, anchor="w")
-        self.items_tree.column("page", width=40, anchor="center")
-        self.items_tree.column("author", width=150, anchor="w")
-        self.items_tree.column("dimension", width=150, anchor="w")
-        self.items_tree.column("validated", width=70, anchor="center")
+        self.items_tree.column("id", width=40, anchor="center", stretch=False)
+        self.items_tree.column("code", width=90, anchor="w", stretch=False)
+        self.items_tree.column("page", width=40, anchor="center", stretch=False)
+        self.items_tree.column("category", width=100, anchor="w", stretch=False)
+        self.items_tree.column("author", width=90, anchor="w", stretch=False)
+        self.items_tree.column("shape", width=80, anchor="w", stretch=False)
+        self.items_tree.column("blade_tip", width=80, anchor="w", stretch=False)
+        self.items_tree.column("dimension", width=80, anchor="w", stretch=False)
+        self.items_tree.column("surface_treatment", width=120, anchor="w", stretch=False)
+        self.items_tree.column("material", width=80, anchor="w", stretch=False)
+        self.items_tree.column("validated", width=80, anchor="center", stretch=False)
 
         yscroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.items_tree.yview)
+        xscroll = ttk.Scrollbar(list_frame, orient="horizontal", command=self.items_tree.xview)
         self.items_tree.configure(yscrollcommand=yscroll.set)
+        self.items_tree.configure(xscrollcommand=xscroll.set)
 
-        self.items_tree.pack(side="left", fill="both", expand=True)
-        yscroll.pack(side="right", fill="y")
+        # Use grid to keep scrollbars aligned with the treeview
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+        self.items_tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
 
         self.items_tree.bind("<<TreeviewSelect>>", self._on_select_item)
         self._update_sort_headers()
@@ -268,7 +302,7 @@ class MainWindow(
         ttk.Entry(editor, textvariable=self.var_page).grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
-        ttk.Label(editor, text="Danh mục").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(editor, text="Chủng loại").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Entry(editor, textvariable=self.var_category).grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
@@ -276,8 +310,24 @@ class MainWindow(
         ttk.Entry(editor, textvariable=self.var_author).grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
+        ttk.Label(editor, text="Hình dạng").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(editor, textvariable=self.var_shape).grid(row=r, column=1, sticky="ew", pady=3)
+        r += 1
+
+        ttk.Label(editor, text="Đầu lưỡi").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(editor, textvariable=self.var_blade_tip).grid(row=r, column=1, sticky="ew", pady=3)
+        r += 1
+
         ttk.Label(editor, text="Kích thước").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Entry(editor, textvariable=self.var_dimension).grid(row=r, column=1, sticky="ew", pady=3)
+        r += 1
+
+        ttk.Label(editor, text="Xử lý bề mặt/ công nghệ").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(editor, textvariable=self.var_surface_treatment).grid(row=r, column=1, sticky="ew", pady=3)
+        r += 1
+
+        ttk.Label(editor, text="Material").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(editor, textvariable=self.var_material).grid(row=r, column=1, sticky="ew", pady=3)
         r += 1
 
         ttk.Label(editor, text="Mô tả từ PDF").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
@@ -410,7 +460,7 @@ class MainWindow(
     def _apply_busy(self, busy: bool) -> None:
         self._busy.set(busy)
         for w in (self.btn_build_pdf, self.btn_refresh, self.btn_match_excel, self.btn_search_images,
-                  self.btn_save, self.btn_add_item, self.btn_delete_item):
+                  self.btn_save, self.btn_add_item, self.btn_delete_item, self.btn_backup):
             w.configure(state=("disabled" if busy else "normal"))
 
         if busy:
@@ -422,10 +472,10 @@ class MainWindow(
         self.status_message.set(msg)
 
     def _set_preview_text(self, text: str) -> None:
-        self.source_preview.configure(state="normal")
-        self.source_preview.delete("1.0", "end")
-        self.source_preview.insert("1.0", text)
-        self.source_preview.configure(state="disabled")
+        """
+        Legacy no-op to keep controller calls safe after removing preview widget.
+        """
+        return
 
     def _run_bg(self, title: str, work: Callable[[], None]) -> None:
         def runner():
@@ -483,9 +533,6 @@ class MainWindow(
             self.state.set_catalog_pdf(path)
             _safe_ui(self.root, self._update_pdf_tools_label)
             self._set_status(f"Đã chọn PDF: {path}")
-            self._set_preview_text(
-                f"Đã chọn PDF:\n{path}\n\nĐang tạo/cập nhật CSDL..."
-            )
         else:
             path = str(self.state.catalog_pdf_path)
             if not path:
@@ -498,17 +545,89 @@ class MainWindow(
                 self._set_status("Đã hủy cập nhật PDF.")
                 return
             self._set_status(f"Đang dùng PDF hiện tại: {path}")
-            self._set_preview_text(
-                f"Đang dùng PDF hiện tại:\n{path}\n\nĐang tạo/cập nhật CSDL..."
-            )
 
         # From here: we have a PDF path
         def work():
-            build_or_update_db_from_pdf(self.state, self.source_preview, self.status_message)
+            build_or_update_db_from_pdf(self.state, None, self.status_message)
             _safe_ui(self.root, self.refresh_items)
             _safe_ui(self.root, lambda: self._set_status("✅ Cập nhật CSDL từ PDF xong"))
 
         self._run_bg("⏳ Đang tạo/cập nhật CSDL từ PDF...", work)
+
+    def on_backup_data(self) -> None:
+        """
+        Backup SQLite DB and assets folder to a user-chosen directory.
+        """
+        if not self.state or not self.state.db_path:
+            messagebox.showwarning("Thiếu CSDL", "Không tìm thấy đường dẫn CSDL để backup.")
+            return
+
+        db_path = Path(self.state.db_path)
+        if not db_path.exists():
+            messagebox.showwarning("Thiếu CSDL", f"Không tìm thấy file DB: {db_path}")
+            return
+
+        dest_root = filedialog.askdirectory(
+            title="Chọn thư mục lưu backup",
+            mustexist=True,
+        )
+        if not dest_root:
+            return
+
+        ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
+        backup_dir = Path(dest_root) / f"smartcatalog_backup_{ts}"
+
+        def work():
+            try:
+                backup_dir.mkdir(parents=True, exist_ok=True)
+
+                # 1) SQLite backup (safe even if DB is open)
+                backup_db_path = backup_dir / "catalog.db"
+                src_conn = sqlite3.connect(str(db_path))
+                try:
+                    dst_conn = sqlite3.connect(str(backup_db_path))
+                    try:
+                        src_conn.backup(dst_conn)
+                    finally:
+                        dst_conn.close()
+                finally:
+                    src_conn.close()
+
+                # 2) Assets backup
+                assets_src = Path(self.state.assets_dir)
+                assets_dst = backup_dir / "assets"
+                if assets_src.exists():
+                    shutil.copytree(assets_src, assets_dst, dirs_exist_ok=True)
+
+                # 3) Catalog PDFs backup
+                pdfs_src = self.state.data_dir / "catalog_pdfs"
+                pdfs_dst = backup_dir / "catalog_pdfs"
+                if pdfs_src.exists():
+                    shutil.copytree(pdfs_src, pdfs_dst, dirs_exist_ok=True)
+
+                # 4) Settings backup
+                settings_src = Path(self.state.settings_path)
+                settings_dst = backup_dir / "settings.json"
+                if settings_src.exists():
+                    shutil.copy2(settings_src, settings_dst)
+
+                _safe_ui(
+                    self.root,
+                    lambda: messagebox.showinfo(
+                        "Backup xong",
+                        f"Đã backup CSDL và assets vào:\n{backup_dir}",
+                    ),
+                )
+            except Exception as exc:
+                _safe_ui(
+                    self.root,
+                    lambda: messagebox.showerror(
+                        "Backup lỗi",
+                        f"Không thể backup: {exc}",
+                    ),
+                )
+
+        self._run_bg("⏳ Đang backup CSDL...", work)
 
     def on_build_excel_db(self) -> None:
         """

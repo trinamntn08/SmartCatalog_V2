@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Optional, List, Tuple
 import hashlib
 import shutil
-import datetime
 
 from smartcatalog.state import CatalogItem
 
@@ -30,7 +29,11 @@ CREATE TABLE IF NOT EXISTS items (
   category TEXT NOT NULL DEFAULT '',
   author TEXT NOT NULL DEFAULT '',
   dimension TEXT NOT NULL DEFAULT '',
-  small_description TEXT NOT NULL DEFAULT ''
+  small_description TEXT NOT NULL DEFAULT '',
+  shape TEXT NOT NULL DEFAULT '',
+  blade_tip TEXT NOT NULL DEFAULT '',
+  surface_treatment TEXT NOT NULL DEFAULT '',
+  material TEXT NOT NULL DEFAULT ''
 );
 
 -- Ensure code is unique
@@ -430,21 +433,6 @@ class CatalogDB:
     # Migrations orchestration
     # -------------------------
 
-    def _migration_log_path(self) -> Optional[Path]:
-        if not self.data_dir:
-            return None
-        log_dir = self.data_dir / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        return log_dir / "migrations.log"
-
-    def _append_migration_log(self, msg: str) -> None:
-        path = self._migration_log_path()
-        if not path:
-            return
-        stamp = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-        with path.open("a", encoding="utf-8", errors="ignore") as f:
-            f.write(f"{stamp} {msg}\n")
-
     def _migration_marker_path(self, name: str) -> Optional[Path]:
         if not self.data_dir:
             return None
@@ -475,15 +463,6 @@ class CatalogDB:
         except Exception as exc:
             return False, f"disk usage check failed: {exc}"
 
-        # file count check (log only)
-        try:
-            images_dir = self.data_dir / "images"
-            legacy_count = sum(1 for _ in images_dir.rglob("*") if _.is_file()) if images_dir.exists() else 0
-            assets_count = sum(1 for _ in assets_root.rglob("*") if _.is_file())
-            self._append_migration_log(f"preflight file counts: legacy_images={legacy_count} assets={assets_count}")
-        except Exception:
-            pass
-
         return True, "ok"
 
     def migrate_all_assets(self, *, fallback_pdf_path: Optional[str] = None) -> dict[str, int]:
@@ -494,16 +473,9 @@ class CatalogDB:
         stats = {"legacy_migrated": 0, "legacy_skipped": 0, "legacy_missing": 0,
                  "assets_moved": 0, "assets_updated": 0, "assets_skipped": 0, "assets_missing": 0}
         marker = self._migration_marker_path("assets_v1")
-        if marker and marker.exists():
-            self._append_migration_log("assets_v1 already migrated; skipping")
-            return stats
-
         ok, reason = self._preflight_assets_migration()
         if not ok:
-            self._append_migration_log(f"assets_v1 preflight failed: {reason}")
             return stats
-
-        self._append_migration_log("assets_v1 migration start")
         legacy_stats = self.migrate_legacy_images_to_assets(fallback_pdf_path=fallback_pdf_path)
         assets_stats = self.migrate_assets_to_pdf_import()
 
@@ -520,11 +492,6 @@ class CatalogDB:
         if marker:
             marker.write_text("ok\n", encoding="utf-8")
 
-        self._append_migration_log(
-            "assets_v1 done "
-            f"legacy(migrated={stats['legacy_migrated']} skipped={stats['legacy_skipped']} missing={stats['legacy_missing']}) "
-            f"assets(moved={stats['assets_moved']} updated={stats['assets_updated']} skipped={stats['assets_skipped']} missing={stats['assets_missing']})"
-        )
         return stats
 
     def connect(self) -> sqlite3.Connection:
@@ -547,6 +514,10 @@ class CatalogDB:
             "author": "TEXT NOT NULL DEFAULT ''",
             "dimension": "TEXT NOT NULL DEFAULT ''",
             "small_description": "TEXT NOT NULL DEFAULT ''",
+            "shape": "TEXT NOT NULL DEFAULT ''",
+            "blade_tip": "TEXT NOT NULL DEFAULT ''",
+            "surface_treatment": "TEXT NOT NULL DEFAULT ''",
+            "material": "TEXT NOT NULL DEFAULT ''",
             "description_excel": "TEXT NOT NULL DEFAULT ''",
             "description_vietnames_from_excel": "TEXT NOT NULL DEFAULT ''",
             "pdf_path": "TEXT NOT NULL DEFAULT ''",
@@ -595,7 +566,20 @@ class CatalogDB:
 
             # select only columns that exist (safe across migrations)
             select_cols = ["id", "code", "description", "page"]
-            for opt in ["category", "author", "dimension", "small_description", "images", "description_excel", "pdf_path", "validated"]:
+            for opt in [
+                "category",
+                "author",
+                "dimension",
+                "small_description",
+                "shape",
+                "blade_tip",
+                "surface_treatment",
+                "material",
+                "images",
+                "description_excel",
+                "pdf_path",
+                "validated",
+            ]:
                 if opt in cols:
                     select_cols.append(opt)
             if "description_vietnames_from_excel" in cols:
@@ -693,6 +677,10 @@ class CatalogDB:
                         author=str(get("author", "") or ""),
                         dimension=str(get("dimension", "") or ""),
                         small_description=str(get("small_description", "") or ""),
+                        shape=str(get("shape", "") or ""),
+                        blade_tip=str(get("blade_tip", "") or ""),
+                        surface_treatment=str(get("surface_treatment", "") or ""),
+                        material=str(get("material", "") or ""),
                     )
                 )
 
@@ -734,7 +722,8 @@ class CatalogDB:
             r = conn.execute(
                 """
                 SELECT id, code, description, page,
-                       description_excel, pdf_path, category, author, dimension, small_description
+                       description_excel, pdf_path, category, author, dimension, small_description,
+                       shape, blade_tip, surface_treatment, material
                        , description_vietnames_from_excel, validated
                 FROM items
                 WHERE code=?
@@ -761,6 +750,10 @@ class CatalogDB:
                 author=str(r["author"] or ""),
                 dimension=str(r["dimension"] or ""),
                 small_description=str(r["small_description"] or ""),
+                shape=str(r["shape"] or ""),
+                blade_tip=str(r["blade_tip"] or ""),
+                surface_treatment=str(r["surface_treatment"] or ""),
+                material=str(r["material"] or ""),
                 images=images,
                 validated=bool(int(r["validated"] or 0)),
             )
@@ -1068,6 +1061,10 @@ class CatalogDB:
         author: str = "",
         dimension: str = "",
         small_description: str = "",
+        shape: str = "",
+        blade_tip: str = "",
+        surface_treatment: str = "",
+        material: str = "",
         validated: bool = False,
         description: str = "",
         description_excel: Optional[str] = None,
@@ -1120,6 +1117,10 @@ class CatalogDB:
                         author=?,
                         dimension=?,
                         small_description=?,
+                        shape=?,
+                        blade_tip=?,
+                        surface_treatment=?,
+                        material=?,
                         validated=?
                     WHERE id=?
                     """,
@@ -1133,6 +1134,10 @@ class CatalogDB:
                         author,
                         dimension,
                         small_description,
+                        shape,
+                        blade_tip,
+                        surface_treatment,
+                        material,
                         1 if validated else 0,
                         item_id,
                     ),
@@ -1148,8 +1153,24 @@ class CatalogDB:
                 pdf_path = self.to_db_path(str(pdf_path or ""))
                 cur = conn.execute(
                     """
-                    INSERT INTO items(code, description, description_excel, description_vietnames_from_excel, pdf_path, page, validated, category, author, dimension, small_description)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    INSERT INTO items(
+                        code,
+                        description,
+                        description_excel,
+                        description_vietnames_from_excel,
+                        pdf_path,
+                        page,
+                        validated,
+                        category,
+                        author,
+                        dimension,
+                        small_description,
+                        shape,
+                        blade_tip,
+                        surface_treatment,
+                        material
+                    )
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         code,
@@ -1163,6 +1184,10 @@ class CatalogDB:
                         author,
                         dimension,
                         small_description,
+                        shape,
+                        blade_tip,
+                        surface_treatment,
+                        material,
                     ),
                 )
                 item_id = int(cur.lastrowid)

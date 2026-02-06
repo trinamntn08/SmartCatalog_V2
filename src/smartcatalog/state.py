@@ -36,6 +36,10 @@ class CatalogItem:
     author: str = ""
     dimension: str = ""
     small_description: str = ""
+    shape: str = ""
+    blade_tip: str = ""
+    surface_treatment: str = ""
+    material: str = ""
 
 
 @dataclass(slots=True)

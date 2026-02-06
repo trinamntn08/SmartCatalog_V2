@@ -38,10 +38,11 @@ class ItemsControllerMixin:
         for it in self.state.items_cache:
             text = (
                 f"{it.id} {it.code} {it.page or ''} "
-                f"{getattr(it,'category','')} {getattr(it,'author','')} "
-                f"{getattr(it,'dimension','')} {getattr(it,'small_description','')} "
+                f"{getattr(it,'category','')} {getattr(it,'shape','')} {getattr(it,'blade_tip','')} "
+                f"{getattr(it,'surface_treatment','')} {getattr(it,'material','')} "
+                f"{getattr(it,'author','')} {getattr(it,'dimension','')} {getattr(it,'small_description','')} "
                 f"{it.description} {getattr(it,'description_excel','')} {getattr(it,'description_vietnames_from_excel','')} "
-                f"{'validated' if getattr(it, 'validated', False) else ''}"
+                f"{'✅' if getattr(it, 'validated', False) else ''}"
             ).lower()
 
             if q and q not in text:
@@ -55,8 +56,13 @@ class ItemsControllerMixin:
                     it.id,
                     it.code,
                     "" if it.page is None else it.page,
+                    getattr(it, "category", ""),
                     getattr(it, "author", ""),
+                    getattr(it, "shape", ""),
+                    getattr(it, "blade_tip", ""),
                     getattr(it, "dimension", ""),
+                    getattr(it, "surface_treatment", ""),
+                    getattr(it, "material", ""),
                     "✅" if getattr(it, "validated", False) else "",
                 ),
             )
@@ -76,6 +82,16 @@ class ItemsControllerMixin:
                 return (it.code or "").lower()
             if col == "page":
                 return (it.page is None, it.page if it.page is not None else 0)
+            if col == "category":
+                return (getattr(it, "category", "") or "").lower()
+            if col == "shape":
+                return (getattr(it, "shape", "") or "").lower()
+            if col == "blade_tip":
+                return (getattr(it, "blade_tip", "") or "").lower()
+            if col == "surface_treatment":
+                return (getattr(it, "surface_treatment", "") or "").lower()
+            if col == "material":
+                return (getattr(it, "material", "") or "").lower()
             if col == "author":
                 return (getattr(it, "author", "") or "").lower()
             if col == "dimension":
@@ -97,13 +113,17 @@ class ItemsControllerMixin:
         }
 
         labels = {
-            "id": "ID",
+            "id": "No",
             "code": "Mã",
             "page": "Trang",
-            "category": "Danh mục",
+            "category": "Chủng loại",
+            "shape": "Hình dạng",
+            "blade_tip": "Đầu lưỡi",
+            "surface_treatment": "Xử lý bề mặt/ công nghệ",
+            "material": "Material",
             "author": "Tác giả",
             "dimension": "Kích thước",
-            "validated": "Đã kiểm duyệt",
+            "validated": "Đã kiểm duyệt (Thời gian)",
             "small_description": "Mô tả ngắn",
             "description": "Mô tả",
         }

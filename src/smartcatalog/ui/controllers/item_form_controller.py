@@ -16,7 +16,8 @@ class ItemFormControllerMixin:
 
     Assumes MainWindow provides:
       - self._selected, self.state (db, selected_item_id, items_cache)
-      - form vars: var_code, var_page, var_category, var_author, var_dimension, var_small_description
+      - form vars: var_code, var_page, var_category, var_author, var_dimension, var_small_description,
+                   var_shape, var_blade_tip, var_surface_treatment, var_material
       - self.description_excel_text (ScrolledText)
       - self.description_vietnames_from_excel_text (ScrolledText)
       - self._set_preview_text(), self._set_status()
@@ -40,6 +41,10 @@ class ItemFormControllerMixin:
         self.var_author.set(getattr(it, "author", "") or "")
         self.var_dimension.set(getattr(it, "dimension", "") or "")
         self.var_small_description.set(getattr(it, "small_description", "") or "")
+        self.var_shape.set(getattr(it, "shape", "") or "")
+        self.var_blade_tip.set(getattr(it, "blade_tip", "") or "")
+        self.var_surface_treatment.set(getattr(it, "surface_treatment", "") or "")
+        self.var_material.set(getattr(it, "material", "") or "")
 
         # Description from Excel
         self.description_excel_text.delete("1.0", "end")
@@ -86,6 +91,10 @@ class ItemFormControllerMixin:
             f"CODE: {it.code}\n"
             f"PAGE: {it.page}\n\n"
             f"CATEGORY: {getattr(it, 'category', '')}\n"
+            f"SHAPE: {getattr(it, 'shape', '')}\n"
+            f"BLADE TIP: {getattr(it, 'blade_tip', '')}\n"
+            f"SURFACE TREATMENT: {getattr(it, 'surface_treatment', '')}\n"
+            f"MATERIAL: {getattr(it, 'material', '')}\n"
             f"AUTHOR: {getattr(it, 'author', '')}\n"
             f"DIMENSION: {getattr(it, 'dimension', '')}\n"
             f"SMALL DESCRIPTION: {getattr(it, 'small_description', '')}\n\n"
@@ -107,6 +116,10 @@ class ItemFormControllerMixin:
             author=getattr(it, "author", "") or "",
             dimension=getattr(it, "dimension", "") or "",
             small_description=getattr(it, "small_description", "") or "",
+            shape=getattr(it, "shape", "") or "",
+            blade_tip=getattr(it, "blade_tip", "") or "",
+            surface_treatment=getattr(it, "surface_treatment", "") or "",
+            material=getattr(it, "material", "") or "",
             description=it.description or "",
             description_excel=it.description_excel or "",
             description_vietnames_from_excel=getattr(it, "description_vietnames_from_excel", "") or "",
@@ -143,6 +156,10 @@ class ItemFormControllerMixin:
         it.author = (self.var_author.get() or "").strip()
         it.dimension = (self.var_dimension.get() or "").strip()
         it.small_description = (self.var_small_description.get() or "").strip()
+        it.shape = (self.var_shape.get() or "").strip()
+        it.blade_tip = (self.var_blade_tip.get() or "").strip()
+        it.surface_treatment = (self.var_surface_treatment.get() or "").strip()
+        it.material = (self.var_material.get() or "").strip()
         it.validated = bool(self.var_validated.get())
 
         # Description from Excel
@@ -160,6 +177,10 @@ class ItemFormControllerMixin:
                 author=it.author,
                 dimension=it.dimension,
                 small_description=it.small_description,
+                shape=it.shape,
+                blade_tip=it.blade_tip,
+                surface_treatment=it.surface_treatment,
+                material=it.material,
                 description=it.description,
                 description_excel=it.description_excel,
                 description_vietnames_from_excel=getattr(it, "description_vietnames_from_excel", "") or "",
@@ -199,6 +220,10 @@ class ItemFormControllerMixin:
         author = (self.var_author.get() or "").strip()
         dimension = (self.var_dimension.get() or "").strip()
         small_description = (self.var_small_description.get() or "").strip()
+        shape = (self.var_shape.get() or "").strip()
+        blade_tip = (self.var_blade_tip.get() or "").strip()
+        surface_treatment = (self.var_surface_treatment.get() or "").strip()
+        material = (self.var_material.get() or "").strip()
         desc_excel = (self.description_excel_text.get("1.0", "end-1c") or "").strip()
         desc_vi_excel = (self.description_vietnames_from_excel_text.get("1.0", "end-1c") or "").strip()
         validated = bool(self.var_validated.get())
@@ -217,6 +242,10 @@ class ItemFormControllerMixin:
             author=author,
             dimension=dimension,
             small_description=small_description,
+            shape=shape,
+            blade_tip=blade_tip,
+            surface_treatment=surface_treatment,
+            material=material,
             description="",
             description_excel=desc_excel,
             description_vietnames_from_excel=desc_vi_excel,
@@ -283,6 +312,10 @@ class ItemFormControllerMixin:
             self.var_author.set("")
             self.var_dimension.set("")
             self.var_small_description.set("")
+            self.var_shape.set("")
+            self.var_blade_tip.set("")
+            self.var_surface_treatment.set("")
+            self.var_material.set("")
             self.var_validated.set(False)
             self.description_excel_text.delete("1.0", "end")
             self.description_vietnames_from_excel_text.delete("1.0", "end")
