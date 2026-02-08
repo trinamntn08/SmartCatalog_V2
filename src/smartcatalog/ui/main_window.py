@@ -7,12 +7,12 @@ import traceback
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
 import sqlite3
 import shutil
 import datetime
-from PIL import Image, ImageTk
-
+if TYPE_CHECKING:
+    from PIL import Image, ImageTk
 from smartcatalog.state import AppState, CatalogItem
 from smartcatalog.loader.pdf_loader import build_or_update_db_from_pdf
 from smartcatalog.ui.widgets.scrollable_frame import ScrollableFrame
@@ -26,12 +26,6 @@ from smartcatalog.ui.pdf_crop_window import PdfCropWindow
 import re
 import hashlib
 from bisect import bisect_right
-from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.drawing.image import Image as XLImage
-from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
-from openpyxl.drawing.xdr import XDRPositiveSize2D
-
 def _normalize_code_soft(s: str) -> str:
     if s is None:
         return ""
@@ -68,6 +62,7 @@ def _get_image_anchor_row(img) -> Optional[int]:
 
 
 def _image_to_pil(img) -> Optional[Image.Image]:
+    from PIL import Image
     try:
         data = img._data()
         return Image.open(io.BytesIO(data))
@@ -137,10 +132,13 @@ class MainWindow(
         self.var_surface_treatment = tk.StringVar()
         self.var_material = tk.StringVar()
         self.var_validated = tk.BooleanVar(value=False)
+        self.var_export_desc_en = tk.BooleanVar(value=False)
+        self.var_export_desc_vi = tk.BooleanVar(value=False)
 
         self._thumb_refs: list[ImageTk.PhotoImage] = []
         self._full_img_ref: Optional[ImageTk.PhotoImage] = None
         self._selected_image_path: Optional[str] = None
+        self.var_export_images_in_ui_order = tk.BooleanVar(value=False)
 
         self._selected: Optional[CatalogItem] = None
         
@@ -152,7 +150,7 @@ class MainWindow(
         self._update_pdf_tools_label()
         self._build_status_bar()
 
-        self.refresh_items()
+        self.root.after(0, self.refresh_items)
 
     # -----------------
     # Layout
@@ -165,7 +163,7 @@ class MainWindow(
         self.toolbar = ttk.Frame(self)
         self.toolbar.pack(fill="x", pady=(0, 8))
 
-        self.btn_build_pdf = ttk.Button(self.toolbar, text="📕 Tạo/Cập nhật CSDL từ PDF", command=self.on_choose_pdf_and_build_db)
+        self.btn_build_pdf = ttk.Button(self.toolbar, text="Tạo/Cập nhật CSDL từ PDF", command=self.on_choose_pdf_and_build_db)
         self.btn_build_pdf.pack(side="left", padx=(0, 6))
         
         self.btn_match_excel = ttk.Button(self.toolbar, text="Cập nhật CSDL từ Excel", command=self.on_build_excel_db)
@@ -178,8 +176,20 @@ class MainWindow(
 
         ttk.Separator(self.toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
 
-        self.btn_search_images  = ttk.Button(self.toolbar, text="🔍 Tìm ảnh theo mã", command=self.on_search_images_from_excel)
-        self.btn_search_images .pack(side="left")
+        self.btn_search_images = ttk.Button(
+            self.toolbar,
+            text="🔍 Xuất theo mã sản phẩm (Excel)",
+            command=self.on_search_images_from_excel,
+        )
+        self.btn_search_images.pack(side="left")
+        self.btn_search_images_opts = ttk.Button(
+            self.toolbar,
+            text="Tùy chọn xuất ▼",
+            command=self._toggle_search_options_popup,
+        )
+        self.btn_search_images_opts.pack(side="left", padx=(6, 0))
+        self._search_opts_popup: Optional[tk.Toplevel] = None
+        self._search_opts_root_bind_id: Optional[str] = None
 
         # Panes
         self.panes = ttk.PanedWindow(self, orient="horizontal")
@@ -245,7 +255,7 @@ class MainWindow(
         self.items_tree.column("dimension", width=80, anchor="w", stretch=False)
         self.items_tree.column("surface_treatment", width=120, anchor="w", stretch=False)
         self.items_tree.column("material", width=80, anchor="w", stretch=False)
-        self.items_tree.column("validated", width=80, anchor="center", stretch=False)
+        self.items_tree.column("validated", width=150, anchor="center", stretch=False)
 
         yscroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.items_tree.yview)
         xscroll = ttk.Scrollbar(list_frame, orient="horizontal", command=self.items_tree.xview)
@@ -460,8 +470,11 @@ class MainWindow(
     def _apply_busy(self, busy: bool) -> None:
         self._busy.set(busy)
         for w in (self.btn_build_pdf, self.btn_refresh, self.btn_match_excel, self.btn_search_images,
+                  self.btn_search_images_opts,
                   self.btn_save, self.btn_add_item, self.btn_delete_item, self.btn_backup):
             w.configure(state=("disabled" if busy else "normal"))
+        if busy:
+            self._close_search_options_popup()
 
         if busy:
             self.progress.start(10)
@@ -476,6 +489,86 @@ class MainWindow(
         Legacy no-op to keep controller calls safe after removing preview widget.
         """
         return
+
+    def _toggle_search_options_popup(self) -> None:
+        if self._search_opts_popup and self._search_opts_popup.winfo_exists():
+            self._close_search_options_popup()
+            return
+        self._open_search_options_popup()
+
+    def _open_search_options_popup(self) -> None:
+        if self._search_opts_popup and self._search_opts_popup.winfo_exists():
+            return
+
+        popup = tk.Toplevel(self.root)
+        popup.withdraw()
+        popup.overrideredirect(True)
+        popup.transient(self.root)
+
+        frame = ttk.Frame(popup, padding=8, relief="solid", borderwidth=1)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Checkbutton(
+            frame,
+            text="Xuất mô tả EN",
+            variable=self.var_export_desc_en,
+        ).pack(anchor="w")
+        ttk.Checkbutton(
+            frame,
+            text="Xuất mô tả VI",
+            variable=self.var_export_desc_vi,
+        ).pack(anchor="w", pady=(4, 0))
+        ttk.Checkbutton(
+            frame,
+            text="Giữ thứ tự ảnh gốc",
+            variable=self.var_export_images_in_ui_order,
+        ).pack(anchor="w", pady=(4, 0))
+
+        popup.update_idletasks()
+        x = self.btn_search_images_opts.winfo_rootx()
+        y = self.btn_search_images_opts.winfo_rooty() + self.btn_search_images_opts.winfo_height() + 2
+        popup.geometry(f"+{x}+{y}")
+        popup.deiconify()
+        popup.lift()
+        popup.focus_force()
+        popup.bind("<Escape>", lambda _e: self._close_search_options_popup())
+
+        self._search_opts_popup = popup
+        self._search_opts_root_bind_id = self.root.bind("<Button-1>", self._on_root_click_search_options, add="+")
+
+    def _close_search_options_popup(self) -> None:
+        if self._search_opts_root_bind_id:
+            try:
+                self.root.unbind("<Button-1>", self._search_opts_root_bind_id)
+            except Exception:
+                pass
+            self._search_opts_root_bind_id = None
+        if self._search_opts_popup and self._search_opts_popup.winfo_exists():
+            try:
+                self._search_opts_popup.destroy()
+            except Exception:
+                pass
+        self._search_opts_popup = None
+
+    @staticmethod
+    def _is_descendant_widget(widget: tk.Misc, ancestor: tk.Misc) -> bool:
+        cur = widget
+        while cur is not None:
+            if cur == ancestor:
+                return True
+            cur = getattr(cur, "master", None)
+        return False
+
+    def _on_root_click_search_options(self, event) -> None:
+        popup = self._search_opts_popup
+        if not popup or not popup.winfo_exists():
+            return
+        widget = event.widget
+        if self._is_descendant_widget(widget, popup):
+            return
+        if self._is_descendant_widget(widget, self.btn_search_images_opts):
+            return
+        self._close_search_options_popup()
 
     def _run_bg(self, title: str, work: Callable[[], None]) -> None:
         def runner():
@@ -548,11 +641,88 @@ class MainWindow(
 
         # From here: we have a PDF path
         def work():
-            build_or_update_db_from_pdf(self.state, None, self.status_message)
+            apply_all_choice: Optional[bool] = None
+
+            def on_existing_item_decision(code: str) -> bool:
+                nonlocal apply_all_choice
+                if apply_all_choice is not None:
+                    return bool(apply_all_choice)
+
+                done = threading.Event()
+                result: dict[str, bool] = {
+                    "update": False,
+                    "apply_all": False,
+                }
+
+                def ask_on_ui_thread():
+                    update, apply_all = self._ask_update_existing_item_dialog(code)
+                    result["update"] = bool(update)
+                    result["apply_all"] = bool(apply_all)
+                    done.set()
+
+                _safe_ui(self.root, ask_on_ui_thread)
+                done.wait()
+                if result["apply_all"]:
+                    apply_all_choice = result["update"]
+                return result["update"]
+
+            build_or_update_db_from_pdf(
+                self.state,
+                None,
+                self.status_message,
+                on_existing_item_decision=on_existing_item_decision,
+            )
             _safe_ui(self.root, self.refresh_items)
             _safe_ui(self.root, lambda: self._set_status("✅ Cập nhật CSDL từ PDF xong"))
 
         self._run_bg("⏳ Đang tạo/cập nhật CSDL từ PDF...", work)
+
+    def _ask_update_existing_item_dialog(self, code: str) -> tuple[bool, bool]:
+        """
+        Ask what to do when an item code already exists.
+        Returns: (update_existing, apply_for_all_existing)
+        """
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Mã đã tồn tại")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        frame = ttk.Frame(dlg, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(
+            frame,
+            text=f"Mã sản phẩm '{code}' đã có trong CSDL.\nBạn muốn cập nhật/ghi đè dữ liệu hiện tại không?",
+            justify="left",
+        ).pack(anchor="w")
+
+        apply_all_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            frame,
+            text="Áp dụng cho tất cả mã đã tồn tại",
+            variable=apply_all_var,
+        ).pack(anchor="w", pady=(10, 0))
+
+        result = {"update": False}
+
+        btns = ttk.Frame(frame)
+        btns.pack(fill="x", pady=(12, 0))
+
+        def choose_update():
+            result["update"] = True
+            dlg.destroy()
+
+        def choose_skip():
+            result["update"] = False
+            dlg.destroy()
+
+        ttk.Button(btns, text="Cập nhật/Ghi đè", command=choose_update).pack(side="left")
+        ttk.Button(btns, text="Giữ nguyên (bỏ qua)", command=choose_skip).pack(side="left", padx=(8, 0))
+
+        dlg.protocol("WM_DELETE_WINDOW", choose_skip)
+        dlg.wait_window()
+        return bool(result["update"]), bool(apply_all_var.get())
 
     def on_backup_data(self) -> None:
         """
@@ -648,6 +818,7 @@ class MainWindow(
             return
 
         def work():
+            from openpyxl import load_workbook
             # 1) read excel (all sheets) -> {excel_code: (vi, en)}
             mapping: dict[str, tuple[str, str]] = {}
             wb = load_workbook(xlsx_path)
@@ -872,7 +1043,6 @@ class MainWindow(
                     item_id = int(row["id"])
                     # replace existing asset links so Excel images show in UI
                     conn.execute("DELETE FROM item_asset_links WHERE item_id=?", (item_id,))
-                    conn.execute("DELETE FROM item_images WHERE item_id=?", (item_id,))
                     for idx, p in enumerate(unique_paths):
                         asset_path_db = self.state.db.to_db_path(p) if self.state.db else p
                         asset_row = conn.execute(
@@ -938,7 +1108,8 @@ class MainWindow(
 
     def on_search_images_from_excel(self) -> None:
         """
-        Load an Excel file, match codes to DB items, and write image paths back into the same file.
+        Load input from the first sheet, match codes to DB items, and write images + descriptions
+        into the next sheet of the same file.
         """
         if not self.state.db:
             messagebox.showwarning("Thiếu CSDL", "Vui lòng tạo/tải CSDL trước (từ PDF).")
@@ -951,10 +1122,19 @@ class MainWindow(
         if not xlsx_path:
             return
         xlsx_path = str(xlsx_path)
-        export_path = str(Path(xlsx_path).with_name(f"{Path(xlsx_path).stem}_co_anh{Path(xlsx_path).suffix}"))
 
         def work():
-            # 1) detect header + code column using existing heuristics
+            from openpyxl import load_workbook
+            from openpyxl.utils import get_column_letter
+            from openpyxl.drawing.image import Image as XLImage
+            from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+            from openpyxl.drawing.xdr import XDRPositiveSize2D
+            from PIL import Image
+            include_desc_en = bool(self.var_export_desc_en.get())
+            include_desc_vi = bool(self.var_export_desc_vi.get())
+            preserve_image_order = bool(self.var_export_images_in_ui_order.get())
+
+            # 1) detect header + code column using existing heuristics on FIRST sheet (input)
             _df, header_row, code_col = detect_excel_code_column(xlsx_path)
 
             # 2) build DB code indexes (same logic as on_build_excel_db)
@@ -969,65 +1149,143 @@ class MainWindow(
             db_index = _build_db_code_index(db_codes)  # normalized -> original db code (unique only)
 
             items = self.state.db.list_items()
-            code_to_images: dict[str, list[str]] = {str(it.code): list(it.images or []) for it in items}
+            code_to_item: dict[str, CatalogItem] = {str(it.code): it for it in items}
 
-            # 3) update Excel in-place (preserve layout)
+            # 3) open workbook and resolve input/output sheets
             wb = load_workbook(xlsx_path)
-            ws = wb.active
+            input_ws = wb.worksheets[0]
+            if len(wb.worksheets) > 1:
+                output_ws = wb.worksheets[1]
+            else:
+                output_ws = wb.create_sheet("Form đầu ra")
             header_row_1 = header_row + 1  # openpyxl is 1-based
 
-            # find code column index in header row
+            # find code column index in INPUT header row
             code_col_idx = None
-            for cell in ws[header_row_1]:
+            for cell in input_ws[header_row_1]:
                 if _normalize_header_text(str(cell.value or "")) == _normalize_header_text(code_col):
                     code_col_idx = cell.column
                     break
             if code_col_idx is None:
                 raise ValueError(f"Không tìm thấy cột mã '{code_col}' trong dòng tiêu đề Excel.")
 
-            # write rows
-            updated = 0
-            total = 0
-            matched = 0
+            # find qty column (best-effort)
+            qty_col_idx = None
+            qty_headers = {"qty", "quantity", "so luong", "số lượng", "sl"}
+            for cell in input_ws[header_row_1]:
+                h = _normalize_header_text(str(cell.value or ""))
+                if h in qty_headers or h.startswith("qty"):
+                    qty_col_idx = cell.column
+                    break
+
+            # read input rows
+            input_rows: list[tuple[str, str]] = []
             sample_excel_codes: list[str] = []
-            rows_with_images: list[tuple[int, list[str]]] = []
-            for r in range(header_row_1 + 1, ws.max_row + 1):
-                raw_code = ws.cell(row=r, column=code_col_idx).value
+            for r in range(header_row_1 + 1, input_ws.max_row + 1):
+                raw_code = input_ws.cell(row=r, column=code_col_idx).value
                 excel_code_str = str(raw_code or "").strip()
                 if not excel_code_str:
                     continue
                 if len(sample_excel_codes) < 5:
                     sample_excel_codes.append(excel_code_str)
-                total += 1
+                qty_val = ""
+                if qty_col_idx is not None:
+                    qty_cell = input_ws.cell(row=r, column=qty_col_idx).value
+                    qty_val = "" if qty_cell is None else str(qty_cell).strip()
+                input_rows.append((excel_code_str, qty_val))
 
+            # prepare output sheet: remove merges/images first, then clear rows
+            for rng in list(output_ws.merged_cells.ranges):
+                if rng.min_row >= 2:
+                    try:
+                        output_ws.unmerge_cells(str(rng))
+                    except KeyError:
+                        pass
+            if output_ws.max_row > 1:
+                output_ws.delete_rows(2, output_ws.max_row - 1)
+            if getattr(output_ws, "_images", None):
+                output_ws._images = []
+
+            # ensure header exists
+            if not output_ws.cell(row=1, column=1).value:
+                output_ws.cell(row=1, column=1, value="No.")
+                output_ws.cell(row=1, column=2, value="Product Code")
+                output_ws.cell(row=1, column=3, value="Product Description")
+                output_ws.cell(row=1, column=4, value="Qty.")
+
+            # write output rows + insert images
+            updated = 0
+            total = 0
+            matched = 0
+            missing = 0
+            missing_codes: list[str] = []
+            out_row = 2
+
+            px_to_emu = 9525
+            pad = 6
+
+            def col_width_px(col_idx: int) -> int:
+                letter = get_column_letter(col_idx)
+                w = output_ws.column_dimensions[letter].width
+                if w is None:
+                    w = output_ws.column_dimensions["A"].width or 8.43
+                return int(w * 7 + 5)
+
+            for idx, (excel_code_str, qty_val) in enumerate(input_rows, start=1):
+                total += 1
                 if excel_code_str in db_code_set:
                     code_to_match = excel_code_str
                 else:
                     code_to_match = db_index.get(_normalize_code_soft(excel_code_str), "")
 
-                imgs = code_to_images.get(code_to_match, []) if code_to_match else []
-                if code_to_match:
+                it = code_to_item.get(code_to_match) if code_to_match else None
+                if it:
                     matched += 1
+                else:
+                    missing += 1
+                    if len(missing_codes) < 30:
+                        missing_codes.append(excel_code_str)
+
+                desc_parts: list[str] = []
+                vn_text = ""
+                if it:
+                    if include_desc_en and getattr(it, "description_excel", ""):
+                        desc_parts.append(str(it.description_excel or "").strip())
+                    if include_desc_vi and getattr(it, "description_vietnames_from_excel", ""):
+                        vn_text = str(it.description_vietnames_from_excel or "").strip()
+                    if include_desc_en and not desc_parts and getattr(it, "description", ""):
+                        desc_parts.append(str(it.description or "").strip())
+                desc_text = "\n".join([p for p in desc_parts if p])
+                # If only VI is requested, put VI directly into Description (no extra row).
+                if include_desc_vi and not include_desc_en and not desc_text and vn_text:
+                    desc_text = vn_text
+                    vn_text = ""
+
+                # data row
+                output_ws.cell(row=out_row, column=1, value=idx)
+                output_ws.cell(row=out_row, column=2, value=excel_code_str)
+                output_ws.cell(row=out_row, column=3, value=desc_text)
+                output_ws.cell(row=out_row, column=4, value=qty_val)
+                if include_desc_en and desc_text:
+                    line_count = max(1, str(desc_text).count("\n") + 1)
+                    output_ws.row_dimensions[out_row].height = max(15, min(80, 15 * line_count))
+
+                extra_desc_rows = 0
+                if include_desc_vi and vn_text:
+                    extra_desc_rows = 1
+                    vn_row = out_row + 1
+                    output_ws.cell(row=vn_row, column=3, value=vn_text)
+                    # Keep VN row compact but readable
+                    line_count = max(1, str(vn_text).count("\n") + 1)
+                    output_ws.row_dimensions[vn_row].height = max(15, min(60, 15 * line_count))
+
+                # image row
+                img_row = out_row + 1 + extra_desc_rows
+                output_ws.merge_cells(start_row=img_row, start_column=1, end_row=img_row, end_column=4)
+
+                imgs = list(it.images or []) if it else []
                 if imgs:
                     updated += 1
-                    rows_with_images.append((r, imgs))
-
-            # Insert image rows (bottom-up to keep indexes stable)
-            if rows_with_images:
-                px_to_emu = 9525
-                pad = 6
-
-                for r, imgs in rows_with_images:
-                    img_row = r + 1  # row below code
-                    ws.merge_cells(start_row=img_row, start_column=1, end_row=img_row, end_column=4)
-
-                    def col_width_px(col_idx: int) -> int:
-                        letter = get_column_letter(col_idx)
-                        w = ws.column_dimensions[letter].width
-                        if w is None:
-                            w = ws.column_dimensions["A"].width or 8.43
-                        # Excel column width to pixels (approx)
-                        return int(w * 7 + 5)
 
                     # Load images and compute base sizes
                     loaded: list[tuple[Image.Image, int, int]] = []
@@ -1037,8 +1295,7 @@ class MainWindow(
                             if not p.exists():
                                 continue
                             pil = Image.open(p).convert("RGBA")
-                            # Rotate to landscape if needed
-                            if pil.height > pil.width:
+                            if not preserve_image_order and pil.height > pil.width:
                                 pil = pil.rotate(90, expand=True)
                             w, h = pil.size
                             if h <= 0 or w <= 0:
@@ -1047,79 +1304,75 @@ class MainWindow(
                         except Exception:
                             continue
 
-                    if not loaded:
-                        continue
+                    if loaded:
+                        if not preserve_image_order:
+                            loaded.sort(key=lambda t: t[1] * t[2])
 
-                    # Order images: small (left) -> big (right)
-                    loaded.sort(key=lambda t: t[1] * t[2])
+                        total_w = sum(w for _, w, _ in loaded) + pad * max(0, len(loaded) - 1)
+                        max_h = max(h for _, _, h in loaded)
 
-                    # Use original sizes; keep existing column widths and center images
-                    total_w = sum(w for _, w, _ in loaded) + pad * max(0, len(loaded) - 1)
-                    max_h = max(h for _, _, h in loaded)
+                        min_h = max_h + 20
+                        output_ws.row_dimensions[img_row].height = max(min_h, max_h + 6) / 1.333
 
-                    # Set row height (points). Approx: 1 pt ~= 1.333 px
-                    min_h = max_h + 20
-                    ws.row_dimensions[img_row].height = max(min_h, max_h + 6) / 1.333
+                        available_w = sum(col_width_px(c) for c in range(1, 5))
+                        if available_w < 1:
+                            available_w = total_w
+                        x_off = max(0, int((available_w - total_w) / 2))
+                        col_widths = [col_width_px(c) for c in range(1, 5)]
+                        v_pad = 10
+                        row_height_px = int((output_ws.row_dimensions[img_row].height or 0) * 1.333)
+                        target_h = max(1, row_height_px - (v_pad * 2))
 
-                    available_w = sum(col_width_px(c) for c in range(1, 5))
-                    if available_w < 1:
-                        available_w = total_w
-                    x_off = max(0, int((available_w - total_w) / 2))
-                    col_widths = [col_width_px(c) for c in range(1, 5)]
-                    v_pad = 10
-                    row_height_px = int((ws.row_dimensions[img_row].height or 0) * 1.333)
-                    target_h = max(1, row_height_px - (v_pad * 2))
+                        scale_h = 1.0 if max_h <= target_h else (target_h / float(max_h))
+                        scale_w = 1.0 if total_w <= available_w else (available_w / float(total_w))
+                        scale = min(1.0, scale_h, scale_w)
 
-                    # Global scale to fit both row height and merged column width
-                    scale_h = 1.0 if max_h <= target_h else (target_h / float(max_h))
-                    scale_w = 1.0 if total_w <= available_w else (available_w / float(total_w))
-                    scale = min(1.0, scale_h, scale_w)
+                        for pil, w, h in loaded:
+                            try:
+                                new_w = max(1, int(w * scale))
+                                new_h = max(1, int(h * scale))
 
-                    for pil, w, h in loaded:
-                        try:
-                            new_w = max(1, int(w * scale))
-                            new_h = max(1, int(h * scale))
+                                buf = io.BytesIO()
+                                if new_w != w or new_h != h:
+                                    pil_resized = pil.resize((new_w, new_h), Image.LANCZOS)
+                                else:
+                                    pil_resized = pil
+                                pil_resized.save(buf, format="PNG")
+                                buf.seek(0)
+                                xl_img = XLImage(buf)
+                                xl_img.width = new_w
+                                xl_img.height = new_h
 
-                            buf = io.BytesIO()
-                            if new_w != w or new_h != h:
-                                pil_resized = pil.resize((new_w, new_h), Image.LANCZOS)
-                            else:
-                                pil_resized = pil
-                            pil_resized.save(buf, format="PNG")
-                            buf.seek(0)
-                            xl_img = XLImage(buf)
-                            xl_img.width = new_w
-                            xl_img.height = new_h
+                                col_idx = 0
+                                col_off = x_off
+                                while col_idx < len(col_widths) - 1 and col_off >= col_widths[col_idx]:
+                                    col_off -= col_widths[col_idx]
+                                    col_idx += 1
 
-                            # translate x_off into (column, colOff)
-                            col_idx = 0
-                            col_off = x_off
-                            while col_idx < len(col_widths) - 1 and col_off >= col_widths[col_idx]:
-                                col_off -= col_widths[col_idx]
-                                col_idx += 1
+                                row_height_px = int((output_ws.row_dimensions[img_row].height or 0) * 1.333)
+                                y_off = 0
+                                if row_height_px > new_h + v_pad * 2:
+                                    y_off = int((row_height_px - new_h) / 2)
+                                elif row_height_px > new_h:
+                                    y_off = v_pad
 
-                            row_height_px = int((ws.row_dimensions[img_row].height or 0) * 1.333)
-                            y_off = 0
-                            if row_height_px > new_h + v_pad * 2:
-                                y_off = int((row_height_px - new_h) / 2)
-                            elif row_height_px > new_h:
-                                y_off = v_pad
+                                marker = AnchorMarker(
+                                    col=col_idx,
+                                    colOff=int(col_off * px_to_emu),
+                                    row=img_row - 1,
+                                    rowOff=int(y_off * px_to_emu),
+                                )
+                                ext = XDRPositiveSize2D(new_w * px_to_emu, new_h * px_to_emu)
+                                xl_img.anchor = OneCellAnchor(_from=marker, ext=ext)
+                                output_ws.add_image(xl_img)
 
-                            marker = AnchorMarker(
-                                col=col_idx,
-                                colOff=int(col_off * px_to_emu),
-                                row=img_row - 1,
-                                rowOff=int(y_off * px_to_emu),
-                            )
-                            ext = XDRPositiveSize2D(new_w * px_to_emu, new_h * px_to_emu)
-                            xl_img.anchor = OneCellAnchor(_from=marker, ext=ext)
-                            ws.add_image(xl_img)
+                                x_off += new_w + pad
+                            except Exception:
+                                continue
 
-                            x_off += new_w + pad
-                        except Exception:
-                            continue
+                out_row += 2 + extra_desc_rows
 
-            wb.save(export_path)
+            wb.save(xlsx_path)
 
             if matched == 0:
                 sample_db_codes = db_codes[:5]
@@ -1137,12 +1390,21 @@ class MainWindow(
 
             _safe_ui(self.root, lambda: messagebox.showinfo(
                 "Xuất file xong",
-                f"Mã khớp: {matched}/{total}\nDòng có ảnh: {updated}/{total}\nĐã lưu: {export_path}",
+                f"Mã khớp: {matched}/{total}\nDòng có ảnh: {updated}/{total}\nĐã cập nhật vào sheet 2.",
             ))
             _safe_ui(
                 self.root,
                 lambda: self._set_status(f"✅ Xuất ảnh ra Excel: khớp {matched}/{total}, ảnh {updated}/{total}")
             )
+            if missing_codes:
+                _safe_ui(
+                    self.root,
+                    lambda: messagebox.showwarning(
+                        "Mã thiếu (mẫu)",
+                        "Một số mã Excel không khớp với CSDL.\n\n"
+                        f"Mẫu (tối đa 30):\n" + "\n".join(missing_codes),
+                    ),
+                )
 
         self._run_bg("⏳ Extracting images by code...", work)
 

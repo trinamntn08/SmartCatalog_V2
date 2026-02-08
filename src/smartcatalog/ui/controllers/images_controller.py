@@ -20,7 +20,7 @@ class ImagesControllerMixin:
     - Render thumbnails for selected item (self._render_thumbnails)
     - Click thumbnail -> select + preview + store self._selected_image_path
     - Add image -> saves to assets + links to selected item
-    - Remove selected -> unlink asset (new) or remove legacy item_images row (fallback)
+    - Remove selected -> unlink asset
 
     Assumes MainWindow provides:
       - self.state (db, catalog_pdf_path, items_cache, selected_item_id)
@@ -334,8 +334,7 @@ class ImagesControllerMixin:
     def on_remove_selected_thumbnail(self) -> None:
         """
         Remove currently selected thumbnail from selected item:
-        - Preferred: if that path is an asset, UNLINK from item_asset_links
-        - Fallback: remove from legacy item_images
+        - Unlink from item_asset_links
         Also remove from in-memory selected.images and refresh UI.
         """
         if not self._selected:
@@ -356,7 +355,7 @@ class ImagesControllerMixin:
             messagebox.showwarning("Chưa chọn", "Sản phẩm đã chọn không hợp lệ.")
             return
 
-        # 1) Unlink in DB (assets links first, fallback legacy)
+        # 1) Unlink in DB
         removed = self._db_remove_image_from_item(item_id=item_id, img_path=img_path)
 
         if not removed:
@@ -446,12 +445,6 @@ class ImagesControllerMixin:
                 conn.commit()
                 return cur.rowcount > 0
 
-            # Fallback: legacy table
-            cur = conn.execute(
-                "DELETE FROM item_images WHERE item_id=? AND image_path=?",
-                (int(item_id), img_db_path),
-            )
-            conn.commit()
-            return cur.rowcount > 0
+            return False
         finally:
             conn.close()

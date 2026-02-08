@@ -31,6 +31,7 @@ class CatalogItem:
     page: Optional[int]
     images: List[str]
     validated: bool = False
+    validated_at: str = ""
 
     category: str = ""
     author: str = ""

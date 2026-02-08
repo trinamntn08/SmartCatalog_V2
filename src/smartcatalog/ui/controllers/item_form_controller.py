@@ -1,6 +1,7 @@
 # smartcatalog/ui/controllers/item_form_controller.py
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 from pathlib import Path
 import os
@@ -125,6 +126,7 @@ class ItemFormControllerMixin:
             description_vietnames_from_excel=getattr(it, "description_vietnames_from_excel", "") or "",
             pdf_path=getattr(it, "pdf_path", "") or "",
             validated=bool(getattr(it, "validated", False)),
+            validated_at=str(getattr(it, "validated_at", "") or ""),
             image_paths=it.images or [],
         )
 
@@ -160,7 +162,14 @@ class ItemFormControllerMixin:
         it.blade_tip = (self.var_blade_tip.get() or "").strip()
         it.surface_treatment = (self.var_surface_treatment.get() or "").strip()
         it.material = (self.var_material.get() or "").strip()
-        it.validated = bool(self.var_validated.get())
+        was_validated = bool(getattr(it, "validated", False))
+        new_validated = bool(self.var_validated.get())
+        it.validated = new_validated
+        if new_validated:
+            if not was_validated or not str(getattr(it, "validated_at", "") or "").strip():
+                it.validated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            it.validated_at = ""
 
         # Description from Excel
         desc_excel = (self.description_excel_text.get("1.0", "end-1c") or "").strip()
@@ -186,6 +195,7 @@ class ItemFormControllerMixin:
                 description_vietnames_from_excel=getattr(it, "description_vietnames_from_excel", "") or "",
                 pdf_path=getattr(it, "pdf_path", "") or "",
                 validated=bool(getattr(it, "validated", False)),
+                validated_at=str(getattr(it, "validated_at", "") or ""),
                 image_paths=it.images or [],
             )
             self.refresh_items()
@@ -227,6 +237,7 @@ class ItemFormControllerMixin:
         desc_excel = (self.description_excel_text.get("1.0", "end-1c") or "").strip()
         desc_vi_excel = (self.description_vietnames_from_excel_text.get("1.0", "end-1c") or "").strip()
         validated = bool(self.var_validated.get())
+        validated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if validated else ""
 
         pdf_path = ""
         try:
@@ -251,6 +262,7 @@ class ItemFormControllerMixin:
             description_vietnames_from_excel=desc_vi_excel,
             pdf_path=pdf_path,
             validated=validated,
+            validated_at=validated_at,
             image_paths=[],
         )
 

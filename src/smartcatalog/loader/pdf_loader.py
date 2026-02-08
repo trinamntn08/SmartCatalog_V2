@@ -222,6 +222,7 @@ def build_or_update_db_from_pdf(
     *,
     page_start: int = 1,
     page_end: Optional[int] = None,
+    on_existing_item_decision: Optional[Callable[[str], bool]] = None,
 ) -> None:
     """
     Extract items from catalog PDF and upsert into SQLite.
@@ -259,6 +260,7 @@ def build_or_update_db_from_pdf(
         scanned = 0
         skipped_validated = 0
         skipped_excel = 0
+        skipped_existing = 0
         images_added = 0
 
         for i in range(start_idx, end_idx + 1):
@@ -277,13 +279,10 @@ def build_or_update_db_from_pdf(
                 existing = state.db.get_item_by_code(it.code, conn=conn)
                 has_any_images = False
                 has_excel_images = False
-                legacy_images: list[str] = []
-
                 if existing:
                     sources = state.db.list_image_sources_for_item(existing.id, conn=conn)
                     has_any_images = bool(sources)
                     has_excel_images = any(src == "excel" for _p, src in sources)
-                    legacy_images = state.db.list_images(existing.id, conn=conn)
 
                     if existing.validated:
                         skipped_validated += 1
@@ -291,6 +290,11 @@ def build_or_update_db_from_pdf(
                     if has_excel_images:
                         skipped_excel += 1
                         continue
+                    if callable(on_existing_item_decision):
+                        should_update = bool(on_existing_item_decision(it.code))
+                        if not should_update:
+                            skipped_existing += 1
+                            continue
 
                 desc = " | ".join([p for p in (it.category, it.author, it.dimension, it.small_description) if p])
 
@@ -304,7 +308,6 @@ def build_or_update_db_from_pdf(
                     validated=bool(existing.validated) if existing else False,
                     description=desc,
                     pdf_path=str(pdf_path),
-                    image_paths=legacy_images if existing else [],
                     conn=conn,
                 )
 
@@ -348,12 +351,13 @@ def build_or_update_db_from_pdf(
                 _set_status(status_message, f"Đã xử lý trang {page_no}/{end_idx+1} | sản phẩm đã cập nhật: {inserted}")
                 _set_preview_text(
                     source_preview,
-                    f"Page {page_no}\n"
-                    f"Found {len(items)} item codes\n"
-                    f"Images added: {images_added}\n"
-                    f"Skipped validated: {skipped_validated}\n"
-                    f"Skipped excel: {skipped_excel}\n\n"
-                    f"Examples:\n"
+                    f"Trang {page_no}\n"
+                    f"Tìm thấy {len(items)} mã sản phẩm\n"
+                    f"Ảnh đã gán: {images_added}\n"
+                    f"Bỏ qua (đã kiểm duyệt): {skipped_validated}\n"
+                    f"Bỏ qua (đã có ảnh Excel): {skipped_excel}\n"
+                    f"Giữ nguyên mã đã có: {skipped_existing}\n\n"
+                    f"Ví dụ:\n"
                     + "\n".join([
                         f"- {it.code}: {it.category} | {it.author} | {it.small_description} | {it.dimension}"
                         for it in items[:8]
@@ -363,7 +367,8 @@ def build_or_update_db_from_pdf(
         _set_status(
             status_message,
             f"✅ Xong. Trang đã quét: {scanned}. Sản phẩm đã cập nhật: {inserted}. "
-            f"Bỏ qua validated: {skipped_validated}. Bỏ qua excel: {skipped_excel}. Đã gán ảnh: {images_added}."
+            f"Bỏ qua validated: {skipped_validated}. Bỏ qua excel: {skipped_excel}. "
+            f"Giữ nguyên mã đã có: {skipped_existing}. Đã gán ảnh: {images_added}."
         )
 
     finally:

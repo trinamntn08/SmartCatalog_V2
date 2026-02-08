@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from smartcatalog.state import CatalogItem
 
@@ -23,6 +24,19 @@ class ItemsControllerMixin:
       - sort state fields: self._sort_col, self._sort_desc
     """
 
+    @staticmethod
+    def _format_validated_at_vi(raw: str) -> str:
+        s = str(raw or "").strip()
+        if not s:
+            return ""
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                dt = datetime.strptime(s, fmt)
+                return dt.strftime("%d/%m/%Y %H:%M:%S")
+            except ValueError:
+                continue
+        return s
+
     def refresh_items(self) -> None:
         if self.state.db:
             self.state.items_cache = self.state.db.list_items()
@@ -42,12 +56,13 @@ class ItemsControllerMixin:
                 f"{getattr(it,'surface_treatment','')} {getattr(it,'material','')} "
                 f"{getattr(it,'author','')} {getattr(it,'dimension','')} {getattr(it,'small_description','')} "
                 f"{it.description} {getattr(it,'description_excel','')} {getattr(it,'description_vietnames_from_excel','')} "
-                f"{'✅' if getattr(it, 'validated', False) else ''}"
+                f"{'✅' if getattr(it, 'validated', False) else ''} {getattr(it, 'validated_at', '')}"
             ).lower()
 
             if q and q not in text:
                 continue
 
+            validated_at = self._format_validated_at_vi(getattr(it, "validated_at", ""))
             self.items_tree.insert(
                 "",
                 "end",
@@ -63,7 +78,7 @@ class ItemsControllerMixin:
                     getattr(it, "dimension", ""),
                     getattr(it, "surface_treatment", ""),
                     getattr(it, "material", ""),
-                    "✅" if getattr(it, "validated", False) else "",
+                    validated_at if getattr(it, "validated", False) else "",
                 ),
             )
 
@@ -97,7 +112,10 @@ class ItemsControllerMixin:
             if col == "dimension":
                 return (getattr(it, "dimension", "") or "").lower()
             if col == "validated":
-                return 1 if getattr(it, "validated", False) else 0
+                return (
+                    1 if getattr(it, "validated", False) else 0,
+                    str(getattr(it, "validated_at", "") or ""),
+                )
             return ""
 
         self.state.items_cache.sort(key=key_fn, reverse=self._sort_desc)

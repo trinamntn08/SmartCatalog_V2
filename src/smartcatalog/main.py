@@ -29,10 +29,6 @@ def start_ui(project_dir: Optional[Path] = None) -> None:
     state = AppState(project_dir=project_dir) if project_dir else AppState()
 
     state.db = CatalogDB(state.db_path, data_dir=state.data_dir)
-    state.db.migrate_paths_to_relative()
-    state.db.migrate_all_assets(
-        fallback_pdf_path=str(state.catalog_pdf_path) if state.catalog_pdf_path else None
-    )
 
     create_main_window(root, state)
     root.columnconfigure(0, weight=1)
